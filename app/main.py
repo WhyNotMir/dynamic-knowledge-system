@@ -8,6 +8,7 @@ import app.models
 from app.api.projects import router as projects_router
 from app.api.sources import router as sources_router
 from app.api.structure import router as structure_router
+from app.api.articles import router as articles_router
 
 
 @asynccontextmanager
@@ -27,6 +28,7 @@ app = FastAPI(
 app.include_router(projects_router)
 app.include_router(sources_router)
 app.include_router(structure_router)
+app.include_router(articles_router)
 
 
 @app.get("/health")
