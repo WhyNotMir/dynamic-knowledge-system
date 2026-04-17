@@ -1,3 +1,5 @@
+# Keep the Python image build context lean — the UI has its own Dockerfile,
+# we don't want its node_modules bleeding into the FastAPI image.
 uploads
 __pycache__
 *.pyc

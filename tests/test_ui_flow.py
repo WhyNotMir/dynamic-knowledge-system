@@ -1,24 +1,23 @@
-"""End-to-end integration test that walks a browser-like happy path.
+"""End-to-end integration test that walks the UI happy path.
 
-This is the single most important test in the suite: it mirrors the
-sequence of HTTP calls a client (any frontend, SPA or script) would
-perform, from "create a project" all the way to "browse built articles".
-If this test passes we know every wire a client depends on is intact.
+This is the single most important test in the suite: it mirrors what the
+Next.js frontend does in `dks-ui/`, from "User clicks New Project" all
+the way to "User browses built articles". If this test passes we know
+every wire the UI depends on is intact.
 
-Client sequence covered here:
-  1.  POST /projects
-  2.  GET  /projects
-  3.  POST /projects/{id}/sources   (multipart upload)
-  4.  GET  /projects/{id}/sources                     (polling — wait for DONE)
-  5.  POST /projects/{id}/structure/propose
-  6.  GET  /projects/{id}/structure/proposals/{pid}   (polling — wait for READY)
-  7.  POST /projects/{id}/articles/build
-  8.  GET  /projects/{id}/articles
-  9.  GET  /projects/{id}/articles/{aid}
+What the UI actually does (see `dks-ui/lib/api.ts`):
+  1.  POST /projects                                   (ProjectsPage)
+  2.  GET  /projects                                   (ProjectsPage list refresh)
+  3.  POST /projects/{id}/sources   (multipart upload) (UploadPanel)
+  4.  GET  /projects/{id}/sources                      (polling — wait for DONE)
+  5.  POST /projects/{id}/structure/propose            (Propose button)
+  6.  GET  /projects/{id}/structure/proposals/{pid}    (polling — wait for READY)
+  7.  POST /projects/{id}/articles/build               (Build button)
+  8.  GET  /projects/{id}/articles                     (ArticlesPage)
+  9.  GET  /projects/{id}/articles/{aid}               (ArticleDetail)
 
-In tests, steps 4 and 6 are normally served by background workers. Here
-we bypass arq and drive the workers inline — the HTTP contract is the
-same.
+In tests steps 4 and 6 are normally served by background workers. Here we
+bypass arq and drive the workers inline — the HTTP contract is the same.
 """
 from __future__ import annotations
 

@@ -1,49 +1,55 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware   # ← ДОБАВЬ ЭТО
+from typing import AsyncIterator
+
 from arq import create_pool
 from arq.connections import RedisSettings
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
-import app.models
+from app.api.articles import router as articles_router
 from app.api.projects import router as projects_router
 from app.api.sources import router as sources_router
 from app.api.structure import router as structure_router
-from app.api.articles import router as articles_router
+from app.config import settings
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.arq_pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-    yield
-    await app.state.arq_pool.close()
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.arq_pool = await create_pool(
+        RedisSettings.from_dsn(settings.redis_url)
+    )
+    try:
+        yield
+    finally:
+        await app.state.arq_pool.close()
 
 
-app = FastAPI(
-    title="Dynamic Knowledge System",
-    description="Source-preserving, article-based knowledge platform",
-    version="0.1.0",
-    lifespan=lifespan,
-)
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="Dynamic Knowledge System",
+        description="Source-preserving, article-based knowledge platform",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
-# 👉 РОУТЕРЫ УЖЕ ПОСЛЕ
-app.include_router(projects_router)
-app.include_router(sources_router)
-app.include_router(structure_router)
-app.include_router(articles_router)
+    app.include_router(projects_router)
+    app.include_router(sources_router)
+    app.include_router(structure_router)
+    app.include_router(articles_router)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return app
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+app = create_app()

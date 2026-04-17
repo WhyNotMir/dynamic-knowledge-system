@@ -15,11 +15,13 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.article_candidate import (
     ArticleCandidate,
+    ArticleCandidateFragment,
     ProposalStatus,
     StructureProposal,
 )
@@ -88,8 +90,11 @@ async def test_run_structure_proposal_marks_ready_and_creates_candidates(
 
         cands = (
             await db.execute(
-                select(ArticleCandidate).where(
-                    ArticleCandidate.proposal_id == proposal_id
+                select(ArticleCandidate)
+                .where(ArticleCandidate.proposal_id == proposal_id)
+                .options(
+                    selectinload(ArticleCandidate.proposal),
+                    selectinload(ArticleCandidate.candidate_fragments),
                 )
             )
         ).scalars().all()
@@ -100,12 +105,13 @@ async def test_run_structure_proposal_marks_ready_and_creates_candidates(
 
     for c in cands:
         assert c.title, "every candidate must have a non-empty title"
-        assert c.project_id == uuid.UUID(project["id"])
-        assert isinstance(c.fragment_ids, list)
-        assert len(c.fragment_ids) > 0
-        # fragment_ids are stored as UUID strings
-        for fid in c.fragment_ids:
-            uuid.UUID(str(fid))  # would raise if not a UUID
+        # Candidates don't carry project_id directly — it lives on the parent
+        # proposal. Check it via the loaded relationship.
+        assert c.proposal.project_id == uuid.UUID(project["id"])
+        # Fragments are linked through ArticleCandidateFragment rows.
+        assert len(c.candidate_fragments) > 0
+        for link in c.candidate_fragments:
+            assert isinstance(link.fragment_id, uuid.UUID)
 
     titles = {c.title for c in cands}
     # Our deterministic mock_structure_agent echoes the section path as title,
@@ -127,15 +133,15 @@ async def test_candidate_fragment_ids_point_to_real_fragments(
     async with session_factory() as db:
         cands = (
             await db.execute(
-                select(ArticleCandidate).where(
-                    ArticleCandidate.proposal_id == proposal_id
-                )
+                select(ArticleCandidate)
+                .where(ArticleCandidate.proposal_id == proposal_id)
+                .options(selectinload(ArticleCandidate.candidate_fragments))
             )
         ).scalars().all()
 
         all_frag_ids: list[uuid.UUID] = []
         for c in cands:
-            all_frag_ids.extend(uuid.UUID(str(f)) for f in c.fragment_ids)
+            all_frag_ids.extend(link.fragment_id for link in c.candidate_fragments)
 
         existing = (
             await db.execute(

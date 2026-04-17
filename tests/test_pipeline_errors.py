@@ -8,7 +8,7 @@ and to surface actionable messages to the user:
     - 404 if proposal belongs to a different project
     - 409 if proposal is not READY (still PENDING or already REVIEWED)
     - 409 if no proposal at all exists for the project (UI didn't propose)
-    - 400 if a candidate carries malformed fragment_ids
+    - 400 if a candidate has no linked fragments
     - article detail endpoint: 404 for unknown article id
 
   /structure/propose
@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.article_candidate import (
     ArticleCandidate,
+    ArticleCandidateFragment,
     ProposalStatus,
     StructureProposal,
 )
@@ -144,16 +145,16 @@ async def test_build_with_cross_project_proposal_returns_404(
     assert "does not belong" in r.json()["detail"].lower()
 
 
-async def test_build_with_malformed_fragment_ids_returns_400(
+async def test_build_with_candidate_without_fragments_returns_400(
     client, project, session_factory, tmp_path
 ):
-    """If a candidate somehow has malformed fragment_ids, the builder raises
+    """If a candidate has no linked fragments, the builder raises
     ValueError and the API returns 400 (not 500)."""
     proposal_id = await _setup_ready_proposal(
         client, project, session_factory, tmp_path
     )
 
-    # Corrupt one candidate's fragment_ids.
+    # Remove all fragment links for one candidate.
     async with session_factory() as db:
         cand = (
             await db.execute(
@@ -163,7 +164,12 @@ async def test_build_with_malformed_fragment_ids_returns_400(
             )
         ).scalars().first()
         assert cand is not None
-        cand.fragment_ids = ["not-a-uuid"]
+
+        await db.execute(
+            delete(ArticleCandidateFragment).where(
+                ArticleCandidateFragment.candidate_id == cand.id
+            )
+        )
         await db.commit()
 
     r = await client.post(
@@ -171,7 +177,7 @@ async def test_build_with_malformed_fragment_ids_returns_400(
         json={"proposal_id": str(proposal_id)},
     )
     assert r.status_code == 400
-    assert "fragment_id" in r.json()["detail"].lower()
+    assert "fragment" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

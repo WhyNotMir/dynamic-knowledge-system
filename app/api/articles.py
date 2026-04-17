@@ -1,19 +1,29 @@
 from __future__ import annotations
+
 import uuid
+
 from fastapi import APIRouter, Body, Depends, HTTPException
-from sqlalchemy import select, func
+from loguru import logger
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from loguru import logger
 
 from app.database import get_db
-from app.models.article import Article, ArticleBlock
-from app.models.article_candidate import StructureProposal, ProposalStatus
 from app.domain.articles.article_builder import build_articles_from_proposal
+from app.models.article import Article, ArticleBlock
+from app.models.article_candidate import (
+    ArticleCandidate,
+    ArticleCandidateFragment,
+    ProposalStatus,
+    StructureProposal,
+)
+from app.models.source_fragment import SourceFragment
 from app.schemas.article import (
-    BuildArticlesRequest, BuildArticlesResponse,
-    ArticleListItem, ArticleDetail,
+    ArticleDetail,
+    ArticleListItem,
+    BuildArticlesRequest,
+    BuildArticlesResponse,
 )
 
 router = APIRouter(prefix="/projects/{project_id}/articles", tags=["articles"])
@@ -23,11 +33,6 @@ async def _resolve_latest_ready_proposal_id(
     project_id: uuid.UUID,
     db: AsyncSession,
 ) -> uuid.UUID:
-    """Return the id of the latest READY proposal for a project.
-
-    Raises 409 if none exists, so callers understand they must wait for
-    / trigger the structure-proposal stage first.
-    """
     result = await db.execute(
         select(StructureProposal.id)
         .where(
@@ -56,53 +61,47 @@ async def build_articles(
     body: BuildArticlesRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """Build articles from a structure proposal.
-
-    `proposal_id` in the body is optional. If omitted, the backend uses the
-    latest proposal of this project with status=READY. The UI therefore
-    only needs `project_id` from the URL.
-
-    Errors:
-      - 404: proposal not found or does not belong to this project
-      - 409: proposal is not READY (or no READY proposal exists for the project)
-      - 500: unexpected DB error (wrapped, not leaked)
-    """
-    # 1. Resolve target proposal
     proposal_id = body.proposal_id if body and body.proposal_id else None
     if proposal_id is None:
         proposal_id = await _resolve_latest_ready_proposal_id(project_id, db)
 
-    # 2. Validate proposal existence / ownership / state at the API boundary,
-    #    so the domain layer stays thin and the HTTP codes are meaningful.
-    proposal = await db.get(StructureProposal, proposal_id)
+    result = await db.execute(
+        select(StructureProposal)
+        .where(StructureProposal.id == proposal_id)
+        .options(
+            selectinload(StructureProposal.candidates)
+            .selectinload(ArticleCandidate.candidate_fragments)
+            .selectinload(ArticleCandidateFragment.fragment)
+        )
+    )
+    proposal = result.scalar_one_or_none()
+
     if proposal is None:
-        raise HTTPException(404, f"Proposal {proposal_id} not found")
+        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
     if proposal.project_id != project_id:
         raise HTTPException(
-            404,
-            f"Proposal {proposal_id} does not belong to project {project_id}",
+            status_code=404,
+            detail=f"Proposal {proposal_id} does not belong to project {project_id}",
         )
     if proposal.status != ProposalStatus.READY:
         raise HTTPException(
-            409,
-            f"Proposal {proposal_id} has status '{proposal.status.value}', "
-            f"expected 'ready'. Articles can only be built from READY proposals.",
+            status_code=409,
+            detail=(
+                f"Proposal {proposal_id} has status '{proposal.status.value}', "
+                "expected 'ready'."
+            ),
         )
 
-    # 3. Build. Any domain-level value errors become 400; DB errors become 500
-    #    with a rollback so the session is left clean.
     try:
-        article_ids = await build_articles_from_proposal(
-            proposal=proposal,
-            db=db,
-        )
-    except ValueError as e:
+        article_ids = await build_articles_from_proposal(proposal=proposal, db=db)
+        await db.commit()
+    except ValueError as exc:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except SQLAlchemyError as exc:
         await db.rollback()
         logger.exception(f"DB error while building articles for proposal {proposal_id}")
-        raise HTTPException(status_code=500, detail=f"Database error: {e.__class__.__name__}")
+        raise HTTPException(status_code=500, detail=f"Database error: {exc.__class__.__name__}")
 
     return BuildArticlesResponse(article_ids=article_ids, count=len(article_ids))
 
@@ -123,6 +122,7 @@ async def list_articles(
         .order_by(Article.created_at)
     )
     rows = result.all()
+
     return [
         ArticleListItem(
             id=row.Article.id,
@@ -144,10 +144,14 @@ async def get_article(
 ):
     result = await db.execute(
         select(Article)
-        .where(Article.id == article_id, Article.project_id == project_id)
+        .where(
+            Article.id == article_id,
+            Article.project_id == project_id,
+        )
         .options(selectinload(Article.blocks))
     )
     article = result.scalar_one_or_none()
-    if not article:
-        raise HTTPException(404, "Article not found")
+    if article is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+
     return article

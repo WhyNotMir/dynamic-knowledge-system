@@ -1,25 +1,22 @@
 from __future__ import annotations
+
 import uuid
+
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
-from app.models.article_candidate import StructureProposal, ArticleCandidate, ProposalStatus
-from app.domain.clustering.center_detector import detect_centers
 from app.agents.structure_agent import propose_structure
+from app.domain.clustering.center_detector import detect_centers
+from app.models.article_candidate import (
+    ArticleCandidate,
+    ArticleCandidateFragment,
+    ProposalStatus,
+    StructureProposal,
+)
 
 
 async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> None:
-    """Build ArticleCandidates for a StructureProposal and mark it READY.
-
-    Error contract:
-      - If the proposal is missing, abort without raising so the worker
-        doesn't endlessly retry a lost record.
-      - If the pipeline raises, rollback the session so no partial candidates
-        are persisted, log, and re-raise so arq marks the job as failed.
-        The proposal stays in PENDING — a subsequent /structure/propose call
-        will create a fresh one.
-    """
     result = await db.execute(
         select(StructureProposal).where(StructureProposal.id == proposal_id)
     )
@@ -28,42 +25,54 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
         logger.error(f"[structure] proposal {proposal_id} not found, aborting")
         return
 
-    project_id = proposal.project_id
-
     try:
-        candidates = await detect_centers(project_id, db)
+        candidates = await detect_centers(proposal.project_id, db)
 
         if not candidates:
-            logger.warning(
-                f"[structure] no candidates for project {project_id}; "
-                f"marking proposal {proposal.id} READY with 0 candidates"
-            )
             proposal.status = ProposalStatus.READY
             await db.commit()
+            logger.warning(
+                f"[structure] no candidates for project {proposal.project_id}; "
+                f"proposal {proposal.id} marked READY with 0 candidates"
+            )
             return
 
-        enriched = await propose_structure(candidates)
+        enriched_candidates = await propose_structure(candidates)
 
-        for cand in enriched:
-            db.add(ArticleCandidate(
-                project_id=project_id,
+        for candidate_data in enriched_candidates:
+            candidate = ArticleCandidate(
                 proposal_id=proposal.id,
-                title=cand["proposed_title"],
-                suggested_section=cand.get("suggested_section"),
-                source_section_path=cand.get("source_section_path"),
-                fragment_ids=[str(f.id) for f in cand["fragments"]],
-                confidence=1.0 if cand["source"] == "section_structure" else 0.7,
-            ))
+                title=candidate_data["proposed_title"],
+                suggested_section=candidate_data.get("suggested_section"),
+                source_section_path=candidate_data.get("source_section_path"),
+                confidence=1.0 if candidate_data["source"] == "section_structure" else 0.7,
+            )
+            db.add(candidate)
+            await db.flush()
+
+            fragments = sorted(
+                candidate_data["fragments"],
+                key=lambda fragment: fragment.position_index,
+            )
+
+            for index, fragment in enumerate(fragments):
+                db.add(
+                    ArticleCandidateFragment(
+                        candidate_id=candidate.id,
+                        fragment_id=fragment.id,
+                        position_index=index,
+                    )
+                )
 
         proposal.status = ProposalStatus.READY
         await db.commit()
+
         logger.info(
-            f"[structure] proposal {proposal.id} READY: {len(enriched)} candidates"
+            f"[structure] proposal {proposal.id} READY: "
+            f"{len(enriched_candidates)} candidates"
         )
 
-    except Exception as e:
-        logger.exception(
-            f"[structure] proposal {proposal.id} failed: {e}"
-        )
+    except Exception as exc:
         await db.rollback()
+        logger.exception(f"[structure] proposal {proposal.id} failed: {exc}")
         raise

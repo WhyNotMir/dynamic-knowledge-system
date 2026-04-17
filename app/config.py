@@ -1,17 +1,32 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+    )
 
     database_url: str
     openai_api_key: str
     groq_api_key: str
-    redis_url: str = "redis://localhost:6379"
-    upload_dir: str = "./uploads"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
-    llm_model: str = "llama-3.3-70b-versatile"
+
+    redis_url: str
+    upload_dir: str
+
+    cors_allowed_origins: list[str]
+
+    embedding_model: str
+    embedding_dimensions: int
+    llm_model: str
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def parse_cors_allowed_origins(cls, value):
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
 
 settings = Settings()

@@ -59,4 +59,8 @@ loguru==0.7.2
 # (the suite will `pytest.skip` with a clear message if it can't connect).
 # -----------------------------------------------------------------------------
 pytest==8.2.0
-pytest-asyncio==0.23.7
+# Pinned to 0.21.x: the 0.23+ release split fixture loops from test loops,
+# which breaks session-scoped async fixtures (engine, schema setup) used by
+# function-scoped tests. 0.21.x keeps the classic "one session loop for
+# everything" model this suite was written against.
+pytest-asyncio==0.21.2

@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 5% 4%;
+    --foreground: 40 20% 95%;
+    --card: 240 5% 6%;
+    --card-foreground: 40 20% 95%;
+    --popover: 240 5% 6%;
+    --popover-foreground: 40 20% 95%;
+    --primary: 38 62% 58%;
+    --primary-foreground: 240 5% 4%;
+    --secondary: 240 4% 10%;
+    --secondary-foreground: 40 20% 85%;
+    --muted: 240 4% 10%;
+    --muted-foreground: 30 8% 45%;
+    --accent: 38 62% 58%;
+    --accent-foreground: 240 5% 4%;
+    --destructive: 0 70% 70%;
+    --destructive-foreground: 240 5% 4%;
+    --border: 240 4% 12%;
+    --input: 240 4% 12%;
+    --ring: 38 62% 58%;
+    --radius: 6px;
+  }
+
+  * { @apply border-vault-border; }
+
+  html { @apply scroll-smooth; }
+
+  body {
+    @apply bg-vault-bg text-vault-text font-sans antialiased;
+    background-image:
+      radial-gradient(ellipse 60% 40% at 15% 10%, rgba(212,168,83,0.04) 0%, transparent 100%),
+      radial-gradient(ellipse 40% 60% at 85% 90%, rgba(212,168,83,0.02) 0%, transparent 100%);
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar       { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2A2A2F; border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3A3A40; }
+
+  ::selection { background: rgba(212,168,83,0.25); color: #F5F0E8; }
+}
+
+@layer utilities {
+  .text-display { @apply font-display tracking-tight; }
+  .text-mono    { @apply font-mono text-sm; }
+
+  .glass {
+    background: rgba(17,17,19,0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .gold-line {
+    border-left: 2px solid rgba(212,168,83,0.5);
+  }
+}

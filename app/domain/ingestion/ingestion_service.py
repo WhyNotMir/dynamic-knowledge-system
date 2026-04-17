@@ -1,15 +1,17 @@
 from __future__ import annotations
-from loguru import logger
+
 import uuid
 
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.ingestion.embedding_service import embed_texts
 from app.domain.ingestion.extractor import extract
 from app.domain.ingestion.segmentor import segment
-from app.domain.ingestion.embedding_service import embed_texts
 from app.models.source import SourceStatus
-from app.models.source_fragment import SourceFragment, ElementType
+from app.models.source_fragment import ElementType, SourceFragment
 from app.repositories.source_repository import SourceRepository
+
 
 _TYPE_MAP = {
     "heading": ElementType.HEADING,
@@ -21,65 +23,65 @@ _TYPE_MAP = {
 
 
 async def run_ingestion(source_id: uuid.UUID, db: AsyncSession) -> None:
-    """
-    Pipeline:
-      1. Extract structured elements from the file
-      2. Segment into meaningful fragments
-      3. Generate embeddings
-      4. Persist fragments
-      5. Update source status → DONE
-    """
     repo = SourceRepository(db)
     source = await repo.get(source_id)
-    if not source:
+    if source is None:
         logger.error(f"Source {source_id} not found — aborting ingestion")
         return
 
-    await repo.update_status(source_id, SourceStatus.PROCESSING)
-
     try:
-        # 1. Extract
+        await repo.update_status(source_id, SourceStatus.PROCESSING)
+
         logger.info(f"[{source_id}] Extracting {source.storage_path}")
         elements = extract(source.storage_path)
         logger.info(f"[{source_id}] Extracted {len(elements)} elements")
 
-        pages = [e.page_number for e in elements if e.page_number]
-        await repo.update_metadata(source_id, {
-            "element_count": len(elements),
-            "page_count": max(pages) if pages else None,
-        })
+        pages = [element.page_number for element in elements if element.page_number is not None]
+        await repo.update_metadata(
+            source_id,
+            {
+                "element_count": len(elements),
+                "page_count": max(pages) if pages else None,
+            },
+        )
 
-        # 2. Segment
         fragments_data = segment(elements)
         logger.info(f"[{source_id}] Segmented into {len(fragments_data)} fragments")
 
-        # 3. Embed
-        texts = [f.content for f in fragments_data]
+        texts = [fragment.content for fragment in fragments_data]
         embeddings = await embed_texts(texts)
         logger.info(f"[{source_id}] Embedded {len(embeddings)} fragments")
 
-        # 4. Persist
-        models = [
+        fragments = [
             SourceFragment(
                 source_id=source_id,
-                project_id=source.project_id,
-                content=frag.content,
-                element_type=_TYPE_MAP.get(frag.element_type, ElementType.PARAGRAPH),
-                heading_level=frag.heading_level,
-                page_number=frag.page_number,
-                section_path=frag.section_path,
-                position_index=frag.position_index,
-                embedding=emb,
+                content=fragment.content,
+                element_type=_TYPE_MAP.get(fragment.element_type, ElementType.PARAGRAPH),
+                heading_level=fragment.heading_level,
+                page_number=fragment.page_number,
+                section_path=fragment.section_path,
+                position_index=fragment.position_index,
+                embedding=embedding,
             )
-            for frag, emb in zip(fragments_data, embeddings)
+            for fragment, embedding in zip(fragments_data, embeddings)
         ]
-        await repo.save_fragments(models)
-        logger.info(f"[{source_id}] Saved {len(models)} fragments")
 
-        # 5. Done
+        await repo.save_fragments(fragments)
         await repo.update_status(source_id, SourceStatus.DONE)
+
+        await db.commit()
         logger.info(f"[{source_id}] Ingestion complete")
 
     except Exception as exc:
+        await db.rollback()
         logger.exception(f"[{source_id}] Ingestion failed: {exc}")
-        await repo.update_status(source_id, SourceStatus.FAILED, error=str(exc))
+
+        # Record the failure in the DB so the UI can show a clear error and
+        # the user can re-upload. We do NOT re-raise: extraction errors are
+        # deterministic (bad file), so arq retries would just loop forever.
+        try:
+            await repo.update_status(source_id, SourceStatus.FAILED, error=str(exc))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception(f"[{source_id}] Failed to persist FAILED status")

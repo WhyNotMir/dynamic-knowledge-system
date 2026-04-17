@@ -1,16 +1,20 @@
 from __future__ import annotations
+
 import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.models.article_candidate import ArticleCandidate, StructureProposal
 from app.models.project import Project
-from app.models.article_candidate import StructureProposal, ArticleCandidate
 from app.schemas.structure import (
-    ProposeStructureResponse, StructureProposalSchema,
-    ArticleCandidateSchema, UpdateCandidateRequest,
+    ArticleCandidateSchema,
+    ProposeStructureResponse,
+    StructureProposalSchema,
+    UpdateCandidateRequest,
 )
 
 router = APIRouter(prefix="/projects/{project_id}/structure", tags=["structure"])
@@ -22,18 +26,19 @@ async def propose_structure(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    # Validate project existence before enqueueing — otherwise the FK on
-    # structure_proposals.project_id would raise an IntegrityError that
-    # surfaces as 500.
     if await db.get(Project, project_id) is None:
-        raise HTTPException(404, f"Project {project_id} not found")
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
     proposal = StructureProposal(project_id=project_id)
     db.add(proposal)
     await db.commit()
     await db.refresh(proposal)
+
     await request.app.state.arq_pool.enqueue_job("propose_structure", str(proposal.id))
-    return ProposeStructureResponse(proposal_id=proposal.id, message="Structure proposal queued")
+    return ProposeStructureResponse(
+        proposal_id=proposal.id,
+        message="Structure proposal queued",
+    )
 
 
 @router.get("/proposals", response_model=list[StructureProposalSchema])
@@ -41,10 +46,13 @@ async def list_proposals(project_id: uuid.UUID, db: AsyncSession = Depends(get_d
     result = await db.execute(
         select(StructureProposal)
         .where(StructureProposal.project_id == project_id)
-        .options(selectinload(StructureProposal.candidates))
+        .options(
+            selectinload(StructureProposal.candidates)
+            .selectinload(ArticleCandidate.candidate_fragments)
+        )
         .order_by(StructureProposal.created_at.desc())
     )
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 @router.get("/proposals/{proposal_id}", response_model=StructureProposalSchema)
@@ -55,12 +63,19 @@ async def get_proposal(
 ):
     result = await db.execute(
         select(StructureProposal)
-        .where(StructureProposal.id == proposal_id, StructureProposal.project_id == project_id)
-        .options(selectinload(StructureProposal.candidates))
+        .where(
+            StructureProposal.id == proposal_id,
+            StructureProposal.project_id == project_id,
+        )
+        .options(
+            selectinload(StructureProposal.candidates)
+            .selectinload(ArticleCandidate.candidate_fragments)
+        )
     )
     proposal = result.scalar_one_or_none()
-    if not proposal:
-        raise HTTPException(404, "Proposal not found")
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
     return proposal
 
 
@@ -73,11 +88,16 @@ async def update_candidate(
 ):
     result = await db.execute(
         select(ArticleCandidate)
-        .where(ArticleCandidate.id == candidate_id, ArticleCandidate.project_id == project_id)
+        .join(StructureProposal, StructureProposal.id == ArticleCandidate.proposal_id)
+        .where(
+            ArticleCandidate.id == candidate_id,
+            StructureProposal.project_id == project_id,
+        )
+        .options(selectinload(ArticleCandidate.candidate_fragments))
     )
     candidate = result.scalar_one_or_none()
-    if not candidate:
-        raise HTTPException(404, "Candidate not found")
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
 
     if body.title is not None:
         candidate.title = body.title

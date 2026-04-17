@@ -6,11 +6,13 @@ What you need to run these tests
 1. A PostgreSQL instance with the `pgvector` extension available. The tests
    will auto-create the extension and schema. Configure via environment:
 
-       TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/dks_test
+       TEST_DATABASE_URL=postgresql+asyncpg://dks:dks_secret@localhost:5432/dks_test
 
-   If not set, the default above is used. `docker-compose up db` from the repo
-   root spins up a compatible server; just create a `dks_test` database next
-   to it (`createdb -U postgres dks_test`).
+   If not set, the default above is used — it matches the credentials that
+   `docker-compose up db` spins up. Create the test DB once:
+
+       docker compose exec db createdb -U dks dks_test
+       docker compose exec db psql -U dks -d dks_test -c "CREATE EXTENSION vector;"
 
 2. The backend's own env vars (`OPENAI_API_KEY`, `GROQ_API_KEY`) are set to
    dummy values here *before* `app.config` is imported, because Pydantic
@@ -44,7 +46,7 @@ os.environ.setdefault(
     "DATABASE_URL",
     os.environ.get(
         "TEST_DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/dks_test",
+        "postgresql+asyncpg://dks:dks_secret@localhost:5432/dks_test",
     ),
 )
 # Keep uploads out of the real upload dir; use a tmp subdir.
@@ -69,6 +71,9 @@ from app.main import app  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Event loop — one loop per session so async fixtures share state cleanly.
+# Required for pytest-asyncio 0.21.x behavior (session-scoped async fixtures
+# must share the loop with their dependent tests). If you bump to 0.23+,
+# this whole model changes and you'll need loop_scope markers instead.
 # ---------------------------------------------------------------------------
 
 

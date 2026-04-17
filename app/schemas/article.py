@@ -1,13 +1,15 @@
 from __future__ import annotations
+
 import uuid
 from datetime import datetime
+
 from pydantic import BaseModel
+
 from app.models.article import ArticleStatus
+from app.models.source_fragment import ElementType
 
 
 class BuildArticlesRequest(BaseModel):
-    # Опционально. Если не передано — берётся последняя proposal
-    # проекта со статусом READY. UI не обязан знать этот внутренний ID.
     proposal_id: uuid.UUID | None = None
 
 
@@ -18,9 +20,9 @@ class BuildArticlesResponse(BaseModel):
 
 class ArticleBlockSchema(BaseModel):
     id: uuid.UUID
-    fragment_id: uuid.UUID
+    fragment_id: uuid.UUID | None
     content: str
-    element_type: str
+    element_type: ElementType
     position_index: int
     page_number: int | None
     section_path: str | None

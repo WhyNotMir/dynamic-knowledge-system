@@ -1,7 +1,10 @@
 import uuid
 from datetime import datetime
+
 from pydantic import BaseModel
-from app.models.source import SourceType, SourceStatus
+
+from app.models.source import SourceStatus, SourceType
+from app.models.source_fragment import ElementType
 
 
 class SourceResponse(BaseModel):
@@ -20,9 +23,8 @@ class SourceResponse(BaseModel):
 class SourceFragmentResponse(BaseModel):
     id: uuid.UUID
     source_id: uuid.UUID
-    project_id: uuid.UUID
     content: str
-    element_type: str
+    element_type: ElementType
     heading_level: int | None
     page_number: int | None
     section_path: str | None
