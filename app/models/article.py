@@ -20,7 +20,7 @@ class Article(Base):
     candidate_id:      Mapped[uuid.UUID | None] = mapped_column(ForeignKey("article_candidates.id"), nullable=True)
     title:             Mapped[str]         = mapped_column(String(512), nullable=False)
     suggested_section: Mapped[str | None]  = mapped_column(String(512), nullable=True)
-    status             = mapped_column(Enum(ArticleStatus), default=ArticleStatus.DRAFT, nullable=False)
+    status:            Mapped[ArticleStatus] = mapped_column(Enum(ArticleStatus), default=ArticleStatus.DRAFT, nullable=False)
     created_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:        Mapped[datetime]    = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     blocks = relationship("ArticleBlock", back_populates="article",

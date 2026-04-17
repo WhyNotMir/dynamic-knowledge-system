@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
+from app.models.project import Project
 from app.models.article_candidate import StructureProposal, ArticleCandidate
 from app.schemas.structure import (
     ProposeStructureResponse, StructureProposalSchema,
@@ -21,6 +22,12 @@ async def propose_structure(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    # Validate project existence before enqueueing — otherwise the FK on
+    # structure_proposals.project_id would raise an IntegrityError that
+    # surfaces as 500.
+    if await db.get(Project, project_id) is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+
     proposal = StructureProposal(project_id=project_id)
     db.add(proposal)
     await db.commit()

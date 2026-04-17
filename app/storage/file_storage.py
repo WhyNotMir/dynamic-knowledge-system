@@ -1,7 +1,9 @@
+import shutil
 import uuid
 import aiofiles
 from pathlib import Path
 from fastapi import UploadFile
+from loguru import logger
 from app.config import settings
 
 
@@ -23,6 +25,29 @@ class FileStorage:
             await out.write(content)
 
         return str(dest)
+
+    def delete_file(self, storage_path: str) -> None:
+        """Remove a single stored file. Safe to call if the file is already gone
+        — we only care about the end state, not about historical accidents."""
+        p = Path(storage_path)
+        try:
+            if p.is_file():
+                p.unlink()
+        except OSError as e:
+            # Don't fail the DB delete over a stuck filesystem; log loudly so
+            # an operator can reconcile later.
+            logger.warning(f"Could not delete file {p}: {e}")
+
+    def delete_project_dir(self, project_id: uuid.UUID) -> None:
+        """Remove the project's entire upload subdirectory, including any files
+        we might not have tracked in the DB."""
+        project_dir = self.base_dir / str(project_id)
+        if not project_dir.exists():
+            return
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as e:
+            logger.warning(f"Could not delete project dir {project_dir}: {e}")
 
 
 file_storage = FileStorage()

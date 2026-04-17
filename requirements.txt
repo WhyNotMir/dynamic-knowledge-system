@@ -37,3 +37,26 @@ python-multipart==0.0.9
 # Resilience / Observability
 tenacity==8.3.0
 loguru==0.7.2
+
+# -----------------------------------------------------------------------------
+# Testing — only needed when running `pytest`. Not imported by the app itself,
+# so it's safe to strip this block out of a production image if you want.
+#
+# What each piece is for:
+#   pytest            — test runner
+#   pytest-asyncio    — enables `async def test_...`; configured in pytest.ini
+#                       with `asyncio_mode = auto` so no per-test markers are
+#                       needed.
+#
+# The test harness also relies on two packages already pinned above:
+#   httpx             — `AsyncClient` + `ASGITransport` let us drive the
+#                       FastAPI app in-process, no running server required.
+#   python-docx       — used by tests/helpers.py::make_docx to generate a
+#                       deterministic fixture DOCX with real heading styles.
+#
+# Tests talk to a real PostgreSQL with pgvector. Point them at one with:
+#   export TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/dks_test
+# (the suite will `pytest.skip` with a clear message if it can't connect).
+# -----------------------------------------------------------------------------
+pytest==8.2.0
+pytest-asyncio==0.23.7

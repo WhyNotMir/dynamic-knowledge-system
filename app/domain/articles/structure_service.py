@@ -10,16 +10,34 @@ from app.agents.structure_agent import propose_structure
 
 
 async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> None:
+    """Build ArticleCandidates for a StructureProposal and mark it READY.
+
+    Error contract:
+      - If the proposal is missing, abort without raising so the worker
+        doesn't endlessly retry a lost record.
+      - If the pipeline raises, rollback the session so no partial candidates
+        are persisted, log, and re-raise so arq marks the job as failed.
+        The proposal stays in PENDING — a subsequent /structure/propose call
+        will create a fresh one.
+    """
     result = await db.execute(
         select(StructureProposal).where(StructureProposal.id == proposal_id)
     )
-    proposal = result.scalar_one()
+    proposal = result.scalar_one_or_none()
+    if proposal is None:
+        logger.error(f"[structure] proposal {proposal_id} not found, aborting")
+        return
+
     project_id = proposal.project_id
 
     try:
         candidates = await detect_centers(project_id, db)
+
         if not candidates:
-            logger.warning(f"No candidates for project {project_id}")
+            logger.warning(
+                f"[structure] no candidates for project {project_id}; "
+                f"marking proposal {proposal.id} READY with 0 candidates"
+            )
             proposal.status = ProposalStatus.READY
             await db.commit()
             return
@@ -39,8 +57,13 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
 
         proposal.status = ProposalStatus.READY
         await db.commit()
-        logger.info(f"Proposal {proposal.id} ready: {len(enriched)} candidates")
+        logger.info(
+            f"[structure] proposal {proposal.id} READY: {len(enriched)} candidates"
+        )
 
     except Exception as e:
-        logger.error(f"Proposal failed: {e}")
+        logger.exception(
+            f"[structure] proposal {proposal.id} failed: {e}"
+        )
+        await db.rollback()
         raise

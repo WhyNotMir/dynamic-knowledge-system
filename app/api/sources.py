@@ -1,8 +1,10 @@
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Request
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 from app.database import get_db
 from app.models.source import SourceType
@@ -31,11 +33,19 @@ async def upload_source(
     if not await ProjectRepository(db).get(pid):
         raise HTTPException(404, "Project not found")
 
+    if not file.filename:
+        raise HTTPException(400, "File name is required")
+
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED:
-        raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {ALLOWED}")
+        raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {sorted(ALLOWED)}")
 
-    storage_path = await file_storage.save(file, pid)
+    try:
+        storage_path = await file_storage.save(file, pid)
+    except OSError as e:
+        logger.exception(f"Failed to persist upload for project {pid}")
+        raise HTTPException(507, f"Failed to save uploaded file: {e}")
+
     source_type = SourceType.PDF if ext == ".pdf" else SourceType.DOCX
     source = await SourceRepository(db).create(pid, file.filename, source_type, storage_path)
 
@@ -77,3 +87,38 @@ async def list_fragments(project_id: str, source_id: str, db: AsyncSession = Dep
         .order_by(SourceFragment.position_index)
     )
     return list(result.scalars().all())
+
+
+@router.delete("/{source_id}", status_code=204)
+async def delete_source(
+    project_id: str, source_id: str, db: AsyncSession = Depends(get_db)
+):
+    """Remove a single source: DB rows (fragments + any article_blocks that
+    reference them) plus the stored file on disk.
+
+    Articles previously built from this source remain — they simply lose
+    the blocks that pointed at the deleted fragments. This matches the UI
+    expectation that cleaning up inputs doesn't silently destroy outputs.
+    """
+    try:
+        pid = uuid.UUID(project_id)
+        sid = uuid.UUID(source_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid UUID")
+
+    repo = SourceRepository(db)
+    existing = await repo.get(sid)
+    if not existing or existing.project_id != pid:
+        raise HTTPException(404, "Source not found")
+
+    try:
+        deleted = await repo.delete(sid)
+    except SQLAlchemyError as e:
+        await db.rollback()
+        logger.exception(f"DB error while deleting source {sid}")
+        raise HTTPException(500, f"Database error: {e.__class__.__name__}")
+
+    if deleted is not None and deleted.storage_path:
+        file_storage.delete_file(deleted.storage_path)
+
+    return Response(status_code=204)

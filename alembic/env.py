@@ -9,7 +9,10 @@ import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from app.config import settings
 from app.database import Base
-from app.models import Project, Source, SourceFragment  # noqa
+# Import the models package so every model is registered on Base.metadata
+# before Alembic reads target_metadata below. Do NOT shrink this import to a
+# subset — omitting any model hides its schema from autogenerate.
+import app.models  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

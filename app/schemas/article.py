@@ -6,7 +6,9 @@ from app.models.article import ArticleStatus
 
 
 class BuildArticlesRequest(BaseModel):
-    proposal_id: uuid.UUID
+    # Опционально. Если не передано — берётся последняя proposal
+    # проекта со статусом READY. UI не обязан знать этот внутренний ID.
+    proposal_id: uuid.UUID | None = None
 
 
 class BuildArticlesResponse(BaseModel):
