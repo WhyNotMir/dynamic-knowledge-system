@@ -76,6 +76,11 @@ export const api = {
         `/projects/${projectId}/structure/candidates/${candidateId}`,
         { method: "PATCH", body: JSON.stringify(body) }
       ),
+    confirmAll: (projectId: string, proposalId: string) =>
+      request<{ confirmed_count: number; total_count: number }>(
+        `/projects/${projectId}/structure/proposals/${proposalId}/confirm-all`,
+        { method: "POST" }
+      ),
   },
 
   articles: {

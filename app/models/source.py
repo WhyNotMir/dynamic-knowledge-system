@@ -16,8 +16,14 @@ if TYPE_CHECKING:
 
 
 class SourceType(str, enum.Enum):
+    # Only `pdf` and `docx` are active in the pipeline for now; `url`, `text`,
+    # `markdown` are reserved so the Phase 12 URL-ingestion path and the Phase
+    # 14 connector imports don't need another enum migration.
     PDF = "pdf"
     DOCX = "docx"
+    URL = "url"
+    TEXT = "text"
+    MARKDOWN = "markdown"
 
 
 class SourceStatus(str, enum.Enum):
@@ -37,6 +43,9 @@ class Source(Base):
         index=True,
     )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    # First-H1 title captured by the extractor; used as Project.name hint and
+    # passed as domain context when TitleAgent composes article titles.
+    title: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     source_type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False)
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     status: Mapped[SourceStatus] = mapped_column(

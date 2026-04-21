@@ -2,8 +2,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { Layers, Play, Check, X, ChevronRight } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Layers, Play, Check, CheckCheck, X, ChevronRight, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { cn, formatDate } from "@/lib/utils";
@@ -99,18 +99,83 @@ function CandidateCard({
   );
 }
 
+function ReviewSection({
+  name, candidates, projectId,
+}: {
+  name: string; candidates: ArticleCandidate[]; projectId: string;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <div className="mb-6">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full text-left text-xs font-mono uppercase tracking-widest text-vault-gold mb-3 flex items-center gap-2 hover:text-vault-gold/80 transition-colors"
+      >
+        {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        <span>{name}</span>
+        <span className="text-vault-muted ml-auto normal-case tracking-normal">
+          {candidates.length}
+        </span>
+      </button>
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            key="content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-2">
+              {candidates.map((c) => (
+                <CandidateCard key={c.id} candidate={c} projectId={projectId} />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function ProposalPanel({ proposal, projectId }: { proposal: StructureProposal; projectId: string }) {
   const qc = useQueryClient();
+
+  const confirmedCount = proposal.candidates.filter(
+    (c) => c.status === "confirmed"
+  ).length;
+  const proposedCount = proposal.candidates.filter(
+    (c) => c.status === "proposed"
+  ).length;
 
   const build = useMutation({
     mutationFn: () => api.articles.build(projectId, proposal.id),
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: ["articles", projectId] });
+      qc.invalidateQueries({ queryKey: ["proposals", projectId] });
       toast.success(`Built ${d.count} articles`);
     },
     onError: () => toast.error("Build failed"),
   });
 
+  const confirmAll = useMutation({
+    mutationFn: () => api.structure.confirmAll(projectId, proposal.id),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["proposals", projectId] });
+      toast.success(
+        d.confirmed_count > 0
+          ? `Confirmed ${d.confirmed_count} candidates`
+          : "All candidates already reviewed"
+      );
+    },
+    onError: () => toast.error("Failed to confirm all"),
+  });
+
+  // Group by suggested_section. Because candidates arrive from the API in
+  // document order, Object iteration preserves insertion order — so sections
+  // themselves end up sorted by the first candidate that falls into them.
   const sections = proposal.candidates.reduce<Record<string, ArticleCandidate[]>>((acc, c) => {
     const key = c.suggested_section ?? "Uncategorized";
     (acc[key] ??= []).push(c);
@@ -130,32 +195,47 @@ function ProposalPanel({ proposal, projectId }: { proposal: StructureProposal; p
             {proposal.status}
           </span>
           <span className="text-xs text-vault-muted font-mono ml-3">
-            {proposal.candidates.length} candidates · {formatDate(proposal.created_at)}
+            {proposal.candidates.length} candidates · {confirmedCount} confirmed · {formatDate(proposal.created_at)}
           </span>
         </div>
         {proposal.status === "ready" && (
-          <Button
-            onClick={() => build.mutate()}
-            disabled={build.isPending}
-            className="bg-vault-gold text-vault-bg hover:bg-vault-gold/90 gap-2"
-          >
-            <Play size={13} />
-            {build.isPending ? "Building…" : "Build Articles"}
-          </Button>
+          <div className="flex items-center gap-2">
+            {proposedCount > 0 && (
+              <Button
+                onClick={() => confirmAll.mutate()}
+                disabled={confirmAll.isPending}
+                variant="outline"
+                className="border-vault-border text-vault-text hover:border-vault-gold/50 hover:text-vault-gold gap-2"
+                title={`Confirm all ${proposedCount} still-proposed candidates`}
+              >
+                <CheckCheck size={14} />
+                {confirmAll.isPending ? "Confirming…" : `Accept All (${proposedCount})`}
+              </Button>
+            )}
+            <Button
+              onClick={() => build.mutate()}
+              disabled={build.isPending || confirmedCount === 0}
+              className="bg-vault-gold text-vault-bg hover:bg-vault-gold/90 gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={
+                confirmedCount === 0
+                  ? "Confirm at least one candidate before building"
+                  : `Build ${confirmedCount} articles`
+              }
+            >
+              <Play size={13} />
+              {build.isPending ? "Building…" : `Build Articles (${confirmedCount})`}
+            </Button>
+          </div>
         )}
       </div>
 
       {Object.entries(sections).map(([section, candidates]) => (
-        <div key={section} className="mb-6">
-          <p className="text-xs font-mono uppercase tracking-widest text-vault-gold mb-3 flex items-center gap-2">
-            <ChevronRight size={10} /> {section}
-          </p>
-          <div className="space-y-2">
-            {candidates.map((c) => (
-              <CandidateCard key={c.id} candidate={c} projectId={projectId} />
-            ))}
-          </div>
-        </div>
+        <ReviewSection
+          key={section}
+          name={section}
+          candidates={candidates}
+          projectId={projectId}
+        />
       ))}
     </div>
   );
@@ -168,6 +248,9 @@ export default function ReviewPage() {
   const { data: proposals = [], isLoading } = useQuery({
     queryKey: ["proposals", projectId],
     queryFn: () => api.structure.listProposals(projectId),
+    // Always refetch on mount so we don't show a stale REVIEWED proposal
+    // (e.g. after user built some articles, then came back to /review).
+    refetchOnMount: "always",
     // Poll every 3s while the latest proposal is still PENDING so the UI
     // transitions to READY automatically once the worker finishes.
     refetchInterval: (query) => {

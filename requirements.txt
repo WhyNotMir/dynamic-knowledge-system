@@ -16,6 +16,16 @@ python-docx==1.1.2
 openai==1.35.0
 groq==0.9.0
 
+# Agent framework (Phase 0 Slice B)
+# langchain-core holds the runnable / prompt / parser interfaces.
+# langchain-groq wraps the Groq SDK as ChatGroq.
+# langgraph provides the StateGraph backbone used in Phase 2.
+# langsmith is the tracer client; imported only when LANGSMITH_TRACING=true.
+langchain-core==0.3.15
+langchain-groq==0.2.1
+langgraph==0.2.45
+langsmith==0.1.140
+
 # Task queue
 arq==0.26.1
 redis==5.0.4

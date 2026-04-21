@@ -64,6 +64,20 @@ def unique_docx(tmp_dir: Path) -> Path:
     return tmp_dir / f"{uuid.uuid4().hex}.docx"
 
 
+async def confirm_all_candidates(client, project_id: str, proposal_id: str) -> dict:
+    """Flip every `proposed` candidate in a proposal to `confirmed`.
+
+    Tests call this as a stand-in for a user clicking every ✓ in the Review
+    UI — without it, `/articles/build` now skips every candidate (because
+    `proposed` is treated as "not yet reviewed") and returns zero articles.
+    """
+    r = await client.post(
+        f"/projects/{project_id}/structure/proposals/{proposal_id}/confirm-all"
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 async def wait_for_source_done(client, project_id: str, source_id: str, *, timeout: float = 2.0) -> dict:
     """Poll GET /sources/{id} until status == done or timeout.
 

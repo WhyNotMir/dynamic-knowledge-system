@@ -26,7 +26,7 @@ import uuid
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 
-from tests.helpers import make_docx, unique_docx
+from tests.helpers import confirm_all_candidates, make_docx, unique_docx
 
 
 async def test_full_ui_happy_path(client, session_factory, tmp_path):
@@ -121,6 +121,10 @@ async def test_full_ui_happy_path(client, session_factory, tmp_path):
     )
     assert r.status_code == 200
     assert r.json()["title"] == "Renamed by user"
+
+    # 7a. User clicks "Accept All" in the Review UI — required now that the
+    # builder only materialises CONFIRMED candidates.
+    await confirm_all_candidates(client, project_id, proposal_id)
 
     # 8. Build articles — UI sends proposal_id but backend would accept empty body too.
     r = await client.post(

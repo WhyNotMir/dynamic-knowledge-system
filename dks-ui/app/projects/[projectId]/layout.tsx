@@ -1,6 +1,7 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, usePathname, useRouter } from "next/navigation";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   BookOpen, FileText, GitBranch, Share2,
@@ -27,29 +28,52 @@ function SidebarSection({
   name: string; articles: ArticleListItem[]; projectId: string;
 }) {
   const pathname = usePathname();
+  // Auto-expand when a child article is active so the user doesn't lose
+  // their place after a navigation or page refresh.
+  const hasActive = articles.some((a) => pathname.includes(a.id));
+  const [expanded, setExpanded] = useState(true);
+  const isOpen = expanded || hasActive;
+
   return (
     <div className="mb-1">
-      <div className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono uppercase tracking-widest text-vault-muted">
-        <ChevronDown size={10} />
-        <span>{name}</span>
-      </div>
-      {articles.map((a) => {
-        const active = pathname.includes(a.id);
-        return (
-          <Link
-            key={a.id}
-            href={`/projects/${projectId}/articles/${a.id}`}
-            className={cn(
-              "block px-4 py-2 text-sm rounded mx-1 transition-all duration-150 truncate",
-              active
-                ? "bg-vault-gold-10 text-vault-gold border-l-2 border-vault-gold pl-3.5"
-                : "text-vault-muted hover:text-vault-text hover:bg-vault-surface-2"
-            )}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left text-xs font-mono uppercase tracking-widest text-vault-muted hover:text-vault-text transition-colors"
+      >
+        {isOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        <span className="truncate">{name}</span>
+      </button>
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            key="content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            className="overflow-hidden"
           >
-            {a.title}
-          </Link>
-        );
-      })}
+            {articles.map((a) => {
+              const active = pathname.includes(a.id);
+              return (
+                <Link
+                  key={a.id}
+                  href={`/projects/${projectId}/articles/${a.id}`}
+                  className={cn(
+                    "block px-4 py-2 text-sm rounded mx-1 transition-all duration-150 truncate",
+                    active
+                      ? "bg-vault-gold-10 text-vault-gold border-l-2 border-vault-gold pl-3.5"
+                      : "text-vault-muted hover:text-vault-text hover:bg-vault-surface-2"
+                  )}
+                >
+                  {a.title}
+                </Link>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

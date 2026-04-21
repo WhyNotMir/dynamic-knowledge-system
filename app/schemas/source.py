@@ -11,6 +11,7 @@ class SourceResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
     filename: str
+    title: str | None = None
     source_type: SourceType
     status: SourceStatus
     doc_metadata: dict | None
@@ -24,10 +25,15 @@ class SourceFragmentResponse(BaseModel):
     id: uuid.UUID
     source_id: uuid.UUID
     content: str
+    content_hash: str | None = None
     element_type: ElementType
     heading_level: int | None
+    list_level: int | None = None
+    group_id: uuid.UUID | None = None
     page_number: int | None
     section_path: str | None
     position_index: int
+    inline_spans: list | None = None
+    meta_json: dict | None = None
 
     model_config = {"from_attributes": True}

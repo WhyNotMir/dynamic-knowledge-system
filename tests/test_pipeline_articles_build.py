@@ -29,13 +29,19 @@ from app.models.article_candidate import (
     StructureProposal,
 )
 
-from tests.helpers import make_docx, unique_docx
+from tests.helpers import confirm_all_candidates, make_docx, unique_docx
 
 
 async def _prepare_ready_proposal(
     client, project, session_factory, tmp_path
 ) -> uuid.UUID:
-    """Full pipeline up to (but not including) /articles/build."""
+    """Full pipeline up to (but not including) /articles/build.
+
+    Every candidate is bulk-confirmed before returning, because the builder
+    now only materialises CONFIRMED candidates. Tests that specifically care
+    about the confirmation gate should set that up themselves instead of
+    calling this helper.
+    """
     docx = make_docx(unique_docx(tmp_path))
     with docx.open("rb") as fh:
         up = await client.post(
@@ -54,6 +60,8 @@ async def _prepare_ready_proposal(
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+
+    await confirm_all_candidates(client, project["id"], str(proposal_id))
 
     return proposal_id
 
@@ -188,3 +196,133 @@ async def test_articles_are_linked_back_to_candidates(
     # Every built article came from one of the proposal's candidates.
     assert linked.issubset(set(cand_ids))
     assert len(linked) == len(articles)
+
+
+# ---------------------------------------------------------------------------
+# Confirmation gate — the builder now only materialises CONFIRMED candidates.
+# ---------------------------------------------------------------------------
+
+
+async def _prepare_ready_proposal_unconfirmed(
+    client, project, session_factory, tmp_path
+) -> uuid.UUID:
+    """Same as _prepare_ready_proposal, but WITHOUT bulk-confirming — every
+    candidate stays in `proposed` status so we can exercise the gate."""
+    docx = make_docx(unique_docx(tmp_path))
+    with docx.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (docx.name, fh)},
+        )
+    source_id = uuid.UUID(up.json()["id"])
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+    r = await client.post(f"/projects/{project['id']}/structure/propose")
+    proposal_id = uuid.UUID(r.json()["proposal_id"])
+    async with session_factory() as db:
+        await run_structure_proposal(proposal_id, db)
+    return proposal_id
+
+
+async def test_build_skips_unconfirmed_candidates(
+    client, project, session_factory, tmp_path
+):
+    """Without any user confirmation, build produces zero articles (not an
+    error) — the proposal still transitions to REVIEWED so the UI doesn't
+    loop, and the user gets a clear signal to go confirm something."""
+    await _prepare_ready_proposal_unconfirmed(
+        client, project, session_factory, tmp_path
+    )
+
+    r = await client.post(f"/projects/{project['id']}/articles/build")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"article_ids": [], "count": 0}
+
+
+async def test_build_only_materialises_confirmed(
+    client, project, session_factory, tmp_path
+):
+    """When only some candidates are confirmed, build produces exactly
+    that many articles — not one per candidate, not zero."""
+    proposal_id = await _prepare_ready_proposal_unconfirmed(
+        client, project, session_factory, tmp_path
+    )
+
+    # Confirm exactly one candidate via the PATCH endpoint.
+    async with session_factory() as db:
+        cands = (
+            await db.execute(
+                select(ArticleCandidate).where(
+                    ArticleCandidate.proposal_id == proposal_id
+                )
+            )
+        ).scalars().all()
+    assert len(cands) >= 2, "docx fixture must yield >=2 candidates"
+    target = cands[0]
+
+    r = await client.patch(
+        f"/projects/{project['id']}/structure/candidates/{target.id}",
+        json={"status": "confirmed"},
+    )
+    assert r.status_code == 200
+
+    r = await client.post(f"/projects/{project['id']}/articles/build")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 1
+    assert len(body["article_ids"]) == 1
+
+
+async def test_confirm_all_flips_only_proposed(
+    client, project, session_factory, tmp_path
+):
+    """confirm-all is idempotent: `rejected` and already-`confirmed`
+    candidates are untouched, only `proposed` becomes `confirmed`."""
+    proposal_id = await _prepare_ready_proposal_unconfirmed(
+        client, project, session_factory, tmp_path
+    )
+
+    # Reject one candidate manually before calling confirm-all.
+    async with session_factory() as db:
+        cands = (
+            await db.execute(
+                select(ArticleCandidate).where(
+                    ArticleCandidate.proposal_id == proposal_id
+                )
+            )
+        ).scalars().all()
+    rejected = cands[0]
+    r = await client.patch(
+        f"/projects/{project['id']}/structure/candidates/{rejected.id}",
+        json={"status": "rejected"},
+    )
+    assert r.status_code == 200
+
+    r = await client.post(
+        f"/projects/{project['id']}/structure/proposals/{proposal_id}/confirm-all"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_count"] == len(cands)
+    # Flipped N-1 (everything except the one we rejected).
+    assert body["confirmed_count"] == len(cands) - 1
+
+    # Second call is a no-op (everything is already confirmed or rejected).
+    r2 = await client.post(
+        f"/projects/{project['id']}/structure/proposals/{proposal_id}/confirm-all"
+    )
+    assert r2.status_code == 200
+    assert r2.json()["confirmed_count"] == 0
+
+    # Build: only the confirmed ones become articles.
+    r3 = await client.post(f"/projects/{project['id']}/articles/build")
+    assert r3.status_code == 200
+    assert r3.json()["count"] == len(cands) - 1
+
+
+async def test_confirm_all_unknown_proposal_returns_404(client, project):
+    random_id = "00000000-0000-0000-0000-000000000000"
+    r = await client.post(
+        f"/projects/{project['id']}/structure/proposals/{random_id}/confirm-all"
+    )
+    assert r.status_code == 404

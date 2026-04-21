@@ -6,6 +6,7 @@ from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.base import configure_langsmith
 from app.api.articles import router as articles_router
 from app.api.projects import router as projects_router
 from app.api.sources import router as sources_router
@@ -15,6 +16,10 @@ from app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Global LangSmith tracing bootstrap (Phase 0 Slice B). No-op unless
+    # LANGSMITH_TRACING=true in the environment.
+    configure_langsmith()
+
     app.state.arq_pool = await create_pool(
         RedisSettings.from_dsn(settings.redis_url)
     )

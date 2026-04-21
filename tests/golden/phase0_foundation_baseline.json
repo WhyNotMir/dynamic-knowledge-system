@@ -1,0 +1,38 @@
+{
+  "candidate_count": 3,
+  "candidates": [
+    {
+      "title": "Generated Article 3",
+      "source_section_path": null,
+      "fragment_count": 2
+    },
+    {
+      "title": "Introduction",
+      "source_section_path": "Introduction",
+      "fragment_count": 3
+    },
+    {
+      "title": "Methods",
+      "source_section_path": "Methods",
+      "fragment_count": 3
+    }
+  ],
+  "article_count": 3,
+  "articles": [
+    {
+      "title": "Generated Article 3",
+      "slug": "generated-article-3",
+      "block_count": 2
+    },
+    {
+      "title": "Introduction",
+      "slug": "introduction",
+      "block_count": 3
+    },
+    {
+      "title": "Methods",
+      "slug": "methods",
+      "block_count": 3
+    }
+  ]
+}

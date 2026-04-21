@@ -32,10 +32,17 @@ from app.models.article_candidate import (
     StructureProposal,
 )
 
-from tests.helpers import make_docx, unique_docx
+from tests.helpers import confirm_all_candidates, make_docx, unique_docx
 
 
-async def _setup_ready_proposal(client, project, session_factory, tmp_path):
+async def _setup_ready_proposal(
+    client, project, session_factory, tmp_path, *, confirm: bool = True
+):
+    """Drive a project up to READY proposal. Confirms every candidate by
+    default so `/articles/build` actually produces articles under the new
+    confirmation-gated builder semantics. Pass `confirm=False` to exercise
+    the pre-confirmation gate.
+    """
     docx = make_docx(unique_docx(tmp_path))
     with docx.open("rb") as fh:
         up = await client.post(
@@ -51,6 +58,9 @@ async def _setup_ready_proposal(client, project, session_factory, tmp_path):
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+
+    if confirm:
+        await confirm_all_candidates(client, project["id"], str(proposal_id))
     return proposal_id
 
 

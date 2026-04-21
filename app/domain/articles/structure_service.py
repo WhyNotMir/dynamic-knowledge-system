@@ -6,7 +6,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.structure_agent import propose_structure
+from app.agents.chains.structure_agent import propose_structure
 from app.domain.clustering.center_detector import detect_centers
 from app.models.article_candidate import (
     ArticleCandidate,
@@ -25,15 +25,20 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
         logger.error(f"[structure] proposal {proposal_id} not found, aborting")
         return
 
+    # Snapshot identifiers BEFORE any commit/rollback so we can log them
+    # without triggering a lazy-load on an expired ORM attribute (which in
+    # async context blows up with MissingGreenlet).
+    project_id = proposal.project_id
+
     try:
-        candidates = await detect_centers(proposal.project_id, db)
+        candidates = await detect_centers(project_id, db)
 
         if not candidates:
             proposal.status = ProposalStatus.READY
             await db.commit()
             logger.warning(
-                f"[structure] no candidates for project {proposal.project_id}; "
-                f"proposal {proposal.id} marked READY with 0 candidates"
+                f"[structure] no candidates for project {project_id}; "
+                f"proposal {proposal_id} marked READY with 0 candidates"
             )
             return
 
@@ -41,7 +46,7 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
 
         for candidate_data in enriched_candidates:
             candidate = ArticleCandidate(
-                proposal_id=proposal.id,
+                proposal_id=proposal_id,
                 title=candidate_data["proposed_title"],
                 suggested_section=candidate_data.get("suggested_section"),
                 source_section_path=candidate_data.get("source_section_path"),
@@ -68,11 +73,14 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
         await db.commit()
 
         logger.info(
-            f"[structure] proposal {proposal.id} READY: "
+            f"[structure] proposal {proposal_id} READY: "
             f"{len(enriched_candidates)} candidates"
         )
 
     except Exception as exc:
         await db.rollback()
-        logger.exception(f"[structure] proposal {proposal.id} failed: {exc}")
-        raise
+        logger.exception(f"[structure] proposal {proposal_id} failed: {exc}")
+        # Don't re-raise — structure-proposal failures are usually deterministic
+        # (bad input / LLM-side issue), and arq retries would just keep crashing
+        # the worker on the same proposal. The proposal stays in PENDING and
+        # the UI can expose a "retry" action when needed.

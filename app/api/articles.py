@@ -111,15 +111,24 @@ async def list_articles(
     project_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
+    # Order articles by where their *earliest* source fragment appears in
+    # the original document (SourceFragment.position_index is the ingestion
+    # order within a source). Articles whose fragments have all been detached
+    # via SET NULL fall to the end.
     result = await db.execute(
         select(
             Article,
             func.count(ArticleBlock.id).label("block_count"),
+            func.min(SourceFragment.position_index).label("first_pos"),
         )
         .outerjoin(ArticleBlock, ArticleBlock.article_id == Article.id)
+        .outerjoin(SourceFragment, SourceFragment.id == ArticleBlock.fragment_id)
         .where(Article.project_id == project_id)
         .group_by(Article.id)
-        .order_by(Article.created_at)
+        .order_by(
+            func.min(SourceFragment.position_index).asc().nullslast(),
+            Article.created_at,
+        )
     )
     rows = result.all()
 
@@ -127,8 +136,11 @@ async def list_articles(
         ArticleListItem(
             id=row.Article.id,
             title=row.Article.title,
+            slug=row.Article.slug,
+            kind=row.Article.kind,
             suggested_section=row.Article.suggested_section,
             status=row.Article.status,
+            description=row.Article.description,
             block_count=row.block_count,
             created_at=row.Article.created_at,
         )

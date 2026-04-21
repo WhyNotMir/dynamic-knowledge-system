@@ -15,6 +15,9 @@ class ProjectResponse(BaseModel):
     name: str
     description: str | None
     scope_hint: str | None
+    summary: str | None = None
+    settings: dict | None = None
+    owner_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 

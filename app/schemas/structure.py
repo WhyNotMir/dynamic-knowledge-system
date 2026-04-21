@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
-from app.models.article_candidate import CandidateStatus, ProposalStatus
+from app.models.article_candidate import CandidateStatus, ProposalKind, ProposalStatus
 
 
 class ProposeStructureResponse(BaseModel):
@@ -22,25 +23,33 @@ class ArticleCandidateSchema(BaseModel):
     confidence: float | None
     created_at: datetime
 
+    # Source attribute from the ORM — declared so Pydantic v2 actually
+    # reads it from the ArticleCandidate object under `from_attributes=True`
+    # (undeclared attributes are silently dropped during validation).
+    # Excluded from the JSON payload; the computed fields below derive the
+    # fragment count / ids that the UI and API consumers actually need.
+    candidate_fragments: list[Any] = Field(default_factory=list, exclude=True)
+
     model_config = {"from_attributes": True}
 
     @computed_field
     @property
     def fragment_ids(self) -> list[uuid.UUID]:
-        candidate_fragments = getattr(self, "candidate_fragments", [])
-        sorted_items = sorted(candidate_fragments, key=lambda item: item.position_index)
+        sorted_items = sorted(
+            self.candidate_fragments, key=lambda item: item.position_index
+        )
         return [item.fragment_id for item in sorted_items]
 
     @computed_field
     @property
     def fragment_count(self) -> int:
-        candidate_fragments = getattr(self, "candidate_fragments", [])
-        return len(candidate_fragments)
+        return len(self.candidate_fragments)
 
 
 class StructureProposalSchema(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    kind: ProposalKind = ProposalKind.INITIAL
     status: ProposalStatus
     candidates: list[ArticleCandidateSchema]
     created_at: datetime
@@ -52,3 +61,8 @@ class UpdateCandidateRequest(BaseModel):
     title: str | None = None
     suggested_section: str | None = None
     status: CandidateStatus | None = None
+
+
+class ConfirmAllResponse(BaseModel):
+    confirmed_count: int
+    total_count: int
