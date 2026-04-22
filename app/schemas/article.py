@@ -31,6 +31,7 @@ class ArticleBlockSchema(BaseModel):
     section_path: str | None
     list_level: int | None = None
     group_id: uuid.UUID | None = None
+    inline_spans: list | None = None
     meta_json: dict | None = None
     synthesized: bool = False
 
@@ -42,6 +43,7 @@ class ArticleListItem(BaseModel):
     title: str
     slug: str
     kind: ArticleKind = ArticleKind.ARTICLE
+    structural_block_id: uuid.UUID | None = None
     suggested_section: str | None
     status: ArticleStatus
     description: str | None = None

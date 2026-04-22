@@ -77,6 +77,15 @@ class SourceRepository:
         await self.db.flush()
         return source
 
+    async def update_title(self, source_id: uuid.UUID, title: str | None) -> Source | None:
+        source = await self.get(source_id)
+        if source is None:
+            return None
+
+        source.title = title
+        await self.db.flush()
+        return source
+
     async def save_fragments(self, fragments: list[SourceFragment]) -> None:
         self.db.add_all(fragments)
         await self.db.flush()

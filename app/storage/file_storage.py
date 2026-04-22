@@ -26,6 +26,25 @@ class FileStorage:
 
         return str(dest)
 
+    async def save_bytes(
+        self,
+        *,
+        project_id: uuid.UUID,
+        content: bytes,
+        ext: str,
+    ) -> str:
+        project_dir = self.base_dir / str(project_id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        normalised_ext = ext if ext.startswith(".") else f".{ext}"
+        dest = project_dir / f"{uuid.uuid4()}{normalised_ext.lower()}"
+        async with aiofiles.open(dest, "wb") as out:
+            await out.write(content)
+        return str(dest)
+
+    def project_path(self, project_id: uuid.UUID, filename: str) -> Path:
+        return self.base_dir / str(project_id) / filename
+
     def delete_file(self, storage_path: str) -> None:
         """Remove a single stored file. Safe to call if the file is already gone
         — we only care about the end state, not about historical accidents."""

@@ -8,6 +8,7 @@ class ProjectCreate(BaseModel):
     name: str
     description: str | None = None
     scope_hint: str | None = None
+    settings: dict | None = None
 
 
 class ProjectResponse(BaseModel):

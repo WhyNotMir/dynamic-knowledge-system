@@ -16,6 +16,7 @@ class ProjectRepository:
             name=data.name,
             description=data.description,
             scope_hint=data.scope_hint,
+            settings=data.settings,
         )
         self.db.add(project)
         await self.db.flush()

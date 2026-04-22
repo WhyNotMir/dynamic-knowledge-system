@@ -11,7 +11,7 @@ StateGraph they serve.
 from __future__ import annotations
 
 import uuid
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 class BaseRunState(TypedDict, total=False):
@@ -26,4 +26,15 @@ class BaseRunState(TypedDict, total=False):
     dlq: list[dict[str, Any]]
 
 
-__all__ = ["BaseRunState"]
+class IngestPipelineState(BaseRunState, total=False):
+    """Shared state for the Phase 2 ingest/propose StateGraph skeleton."""
+
+    job_kind: Literal["ingest_source", "propose_structure"]
+    source_id: uuid.UUID | None
+    proposal_id: uuid.UUID | None
+    status: Literal["pending", "running", "completed", "failed"]
+    current_node: str | None
+    result: dict[str, Any]
+
+
+__all__ = ["BaseRunState", "IngestPipelineState"]

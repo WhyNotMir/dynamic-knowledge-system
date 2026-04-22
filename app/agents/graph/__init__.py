@@ -13,4 +13,7 @@ Nothing imports langgraph at the top of the ``__init__`` so environments
 without langgraph installed stay importable.
 """
 
-__all__: list[str] = []
+__all__ = [
+    "ingest_pipeline",
+    "runtime",
+]

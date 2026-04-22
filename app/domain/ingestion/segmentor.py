@@ -1,8 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
+import uuid
+
 from app.domain.ingestion.extractor import ExtractedElement
 
-MIN_CHARS = 80     # fragments shorter than this are merged with neighbors
+MIN_CHARS = 180    # short paragraphs are merged with neighbors to reduce choppy one-liners
 MAX_MERGE = 1200   # never merge beyond this total length
 
 
@@ -14,6 +16,28 @@ class FragmentData:
     section_path: str
     position_index: int
     heading_level: int | None
+    list_level: int | None = None
+    group_id: uuid.UUID | None = None
+    inline_spans: list[dict] | None = None
+    meta_json: dict | None = None
+
+
+def _merge_inline_spans(
+    left_content: str,
+    left_spans: list[dict] | None,
+    right_spans: list[dict] | None,
+    *,
+    separator_len: int,
+) -> list[dict] | None:
+    merged: list[dict] = [dict(span) for span in left_spans or []]
+    if right_spans:
+        offset = len(left_content) + separator_len
+        for span in right_spans:
+            shifted = dict(span)
+            shifted["start"] = shifted["start"] + offset
+            shifted["end"] = shifted["end"] + offset
+            merged.append(shifted)
+    return merged or None
 
 
 def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
@@ -36,6 +60,17 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
 
     for el in elements:
         if el.element_type == "list_item":
+            if (
+                pending_list
+                and list_meta
+                and (
+                    list_meta["section_path"] != el.section_path
+                    or list_meta["list_level"] != el.list_level
+                )
+            ):
+                flush_list()
+                list_meta = None
+
             if not pending_list:
                 list_meta = {
                     "element_type": "list_item",
@@ -43,13 +78,17 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
                     "section_path": el.section_path,
                     "position_index": el.position_index,
                     "heading_level": None,
+                    "list_level": el.list_level,
+                    "group_id": uuid.uuid4(),
+                    "inline_spans": el.inline_spans,
+                    "meta_json": el.meta_json,
                 }
             pending_list.append(el.content)
             continue
 
         flush_list()
 
-        if el.element_type in ("heading", "table", "caption"):
+        if el.element_type in ("heading", "table", "caption", "quote", "code_block", "image", "footnote", "formula"):
             fragments.append(FragmentData(
                 content=el.content,
                 element_type=el.element_type,
@@ -57,16 +96,26 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
                 section_path=el.section_path,
                 position_index=el.position_index,
                 heading_level=el.heading_level,
+                list_level=el.list_level,
+                group_id=None,
+                inline_spans=el.inline_spans,
+                meta_json=el.meta_json,
             ))
             continue
 
-        # Paragraph: merge with previous if previous is short and same section
+        # Paragraph: merge short follow-up paragraphs into their neighbour so
+        # the reader doesn't get a page full of one-sentence blocks.
         if (
             fragments
             and fragments[-1].element_type == "paragraph"
             and fragments[-1].section_path == el.section_path
-            and len(fragments[-1].content) < MIN_CHARS
+            and (
+                len(fragments[-1].content) < MIN_CHARS
+                or len(el.content) < MIN_CHARS
+            )
             and len(fragments[-1].content) + len(el.content) < MAX_MERGE
+            and not fragments[-1].meta_json
+            and not el.meta_json
         ):
             prev = fragments[-1]
             fragments[-1] = FragmentData(
@@ -76,6 +125,15 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
                 section_path=el.section_path,
                 position_index=prev.position_index,
                 heading_level=None,
+                list_level=None,
+                group_id=prev.group_id,
+                inline_spans=_merge_inline_spans(
+                    prev.content,
+                    prev.inline_spans,
+                    el.inline_spans,
+                    separator_len=1,
+                ),
+                meta_json=None,
             )
         else:
             fragments.append(FragmentData(
@@ -85,6 +143,10 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
                 section_path=el.section_path,
                 position_index=el.position_index,
                 heading_level=el.heading_level,
+                list_level=el.list_level,
+                group_id=None,
+                inline_spans=el.inline_spans,
+                meta_json=el.meta_json,
             ))
 
     flush_list()

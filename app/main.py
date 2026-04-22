@@ -8,8 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.base import configure_langsmith
 from app.api.articles import router as articles_router
+from app.api.inbox import router as inbox_router
 from app.api.projects import router as projects_router
 from app.api.sources import router as sources_router
+from app.api.structural_blocks import router as structural_blocks_router
 from app.api.structure import router as structure_router
 from app.config import settings
 
@@ -48,6 +50,8 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(sources_router)
     app.include_router(structure_router)
+    app.include_router(inbox_router)
+    app.include_router(structural_blocks_router)
     app.include_router(articles_router)
 
     @app.get("/health")

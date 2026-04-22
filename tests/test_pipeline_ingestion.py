@@ -12,7 +12,7 @@ from app.models.source import Source, SourceStatus, SourceType
 from app.models.source_fragment import SourceFragment
 from app.repositories.source_repository import SourceRepository
 
-from tests.helpers import make_docx, unique_docx
+from tests.helpers import make_docx, make_rich_docx, unique_docx
 
 
 async def test_run_ingestion_produces_fragments(
@@ -38,6 +38,7 @@ async def test_run_ingestion_produces_fragments(
         assert src is not None
         assert src.status == SourceStatus.DONE
         assert src.source_type == SourceType.DOCX
+        assert src.title == "Introduction"
         assert src.doc_metadata is not None
         assert src.doc_metadata.get("element_count", 0) > 0
 
@@ -89,3 +90,57 @@ async def test_ingestion_marks_source_failed_on_extractor_error(
         src = await SourceRepository(db).get(source_id)
         assert src.status == SourceStatus.FAILED
         assert src.error_message and "synthetic extract failure" in src.error_message
+
+
+async def test_run_ingestion_preserves_rich_source_metadata(
+    client, project, session_factory, tmp_path
+):
+    docx = make_rich_docx(unique_docx(tmp_path))
+    with docx.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (docx.name, fh)},
+        )
+    source_id = uuid.UUID(up.json()["id"])
+
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+
+    async with session_factory() as db:
+        frags = (
+            await db.execute(
+                select(SourceFragment)
+                .where(SourceFragment.source_id == source_id)
+                .order_by(SourceFragment.position_index)
+            )
+        ).scalars().all()
+
+    assert all(f.content_hash for f in frags)
+
+    paragraph = next((f for f in frags if f.element_type.value == "paragraph"), None)
+    assert paragraph is not None
+    assert paragraph.inline_spans is not None
+    assert {span["style"] for span in paragraph.inline_spans} >= {"bold", "italic", "code"}
+
+    quote = next((f for f in frags if f.element_type.value == "quote"), None)
+    assert quote is not None
+
+    code_block = next((f for f in frags if f.element_type.value == "code_block"), None)
+    assert code_block is not None
+
+    list_block = next((f for f in frags if f.element_type.value == "list_item"), None)
+    assert list_block is not None
+    assert list_block.group_id is not None
+
+    table = next((f for f in frags if f.element_type.value == "table"), None)
+    assert table is not None
+    assert table.meta_json is not None
+    assert table.meta_json["rows"][0] == ["Column A", "Column B"]
+
+    image = next((f for f in frags if f.element_type.value == "image"), None)
+    assert image is not None
+    assert image.meta_json is not None
+    assert image.meta_json["image_ref"].startswith(f"/projects/{project['id']}/sources/assets/")
+
+    footnote = next((f for f in frags if f.element_type.value == "footnote"), None)
+    assert footnote is not None

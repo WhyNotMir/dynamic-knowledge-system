@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import base64
 from pathlib import Path
 
 from docx import Document
+from docx.shared import Pt
 
 
 def make_docx(path: Path) -> Path:
@@ -53,6 +55,93 @@ def make_docx(path: Path) -> Path:
     )
     doc.add_paragraph(
         "The methods section ends with a short note on limitations."
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    return path
+
+
+def make_rich_docx(path: Path) -> Path:
+    """Write a DOCX that exercises richer source-driven extraction.
+
+    Includes:
+    - heading + formatted paragraph (bold, italic, monospace)
+    - quote paragraph
+    - bullet list
+    - simple table
+    """
+    doc = Document()
+    doc.add_heading("Rich Content", level=1)
+
+    para = doc.add_paragraph()
+    para.add_run("This paragraph has ")
+    run = para.add_run("bold")
+    run.bold = True
+    para.add_run(", ")
+    run = para.add_run("italic")
+    run.italic = True
+    para.add_run(", and ")
+    run = para.add_run("inline code")
+    run.font.name = "Courier New"
+    run.font.size = Pt(10)
+    para.add_run(" spans.")
+
+    quote = doc.add_paragraph("Quoted material from the source document.")
+    for style_name in ("Intense Quote", "Quote"):
+        try:
+            quote.style = style_name
+            break
+        except KeyError:
+            continue
+
+    item = doc.add_paragraph("First bullet item", style="List Bullet")
+    item = doc.add_paragraph("Second bullet item", style="List Bullet")
+    item.paragraph_format.left_indent = item.paragraph_format.left_indent
+
+    code = doc.add_paragraph()
+    code.add_run("print('hello world')").font.name = "Courier New"
+
+    image_path = path.parent / "tiny.png"
+    image_path.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+    ))
+    doc.add_picture(str(image_path))
+
+    doc.add_paragraph("[1] Supplemental footnote from the source.")
+
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Column A"
+    table.cell(0, 1).text = "Column B"
+    table.cell(1, 0).text = "Value 1"
+    table.cell(1, 1).text = "Value 2"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    return path
+
+
+def make_multitopic_docx(path: Path) -> Path:
+    """Write a DOCX with one H1 topic and nested H2/H3 headings."""
+    doc = Document()
+    doc.add_heading("Platform", level=1)
+    doc.add_paragraph(
+        "The platform section introduces the broader topic and provides enough "
+        "context to comfortably exceed the clustering threshold for a single topic."
+    )
+    doc.add_heading("Architecture", level=2)
+    doc.add_paragraph(
+        "Architecture explains how the platform is decomposed into services, "
+        "pipelines, and runtime boundaries."
+    )
+    doc.add_heading("Worker Layer", level=3)
+    doc.add_paragraph(
+        "The worker layer handles asynchronous execution, background jobs, "
+        "and durable retries."
+    )
+    doc.add_heading("Operations", level=2)
+    doc.add_paragraph(
+        "Operations focuses on monitoring, deployment ergonomics, and incident response."
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)

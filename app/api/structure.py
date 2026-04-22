@@ -171,7 +171,10 @@ async def update_candidate(
             ArticleCandidate.id == candidate_id,
             StructureProposal.project_id == project_id,
         )
-        .options(selectinload(ArticleCandidate.candidate_fragments))
+        .options(
+            selectinload(ArticleCandidate.candidate_fragments)
+            .selectinload(ArticleCandidateFragment.fragment)
+        )
     )
     candidate = result.scalar_one_or_none()
     if candidate is None:

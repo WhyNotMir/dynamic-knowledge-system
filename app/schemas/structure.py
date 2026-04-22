@@ -9,6 +9,25 @@ from pydantic import BaseModel, Field, computed_field
 from app.models.article_candidate import CandidateStatus, ProposalKind, ProposalStatus
 
 
+def _looks_like_real_heading(text: str) -> bool:
+    stripped = " ".join(text.split()).strip()
+    if not stripped:
+        return False
+    if len(stripped) > 90:
+        return False
+    alpha = sum(char.isalpha() for char in stripped)
+    digits = sum(char.isdigit() for char in stripped)
+    if alpha < 3:
+        return False
+    if digits > alpha:
+        return False
+    bad_markers = ["<eos>", "arxiv:", "[cs.", "wsj", "gnmt", "en-de", "en-fr"]
+    lowered = stripped.casefold()
+    if any(marker in lowered for marker in bad_markers):
+        return False
+    return True
+
+
 class ProposeStructureResponse(BaseModel):
     proposal_id: uuid.UUID
     message: str
@@ -44,6 +63,37 @@ class ArticleCandidateSchema(BaseModel):
     @property
     def fragment_count(self) -> int:
         return len(self.candidate_fragments)
+
+    @computed_field
+    @property
+    def internal_headings(self) -> list[str]:
+        headings: list[tuple[int, str]] = []
+        seen: set[str] = set()
+
+        sorted_items = sorted(
+            self.candidate_fragments, key=lambda item: item.position_index
+        )
+        for item in sorted_items:
+            fragment = getattr(item, "fragment", None)
+            if fragment is None:
+                continue
+            if fragment.element_type.value != "heading":
+                continue
+            if not fragment.heading_level or fragment.heading_level < 2:
+                continue
+
+            title = fragment.content.strip()
+            if not title:
+                continue
+            if not _looks_like_real_heading(title):
+                continue
+            key = title.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            headings.append((fragment.heading_level, title))
+
+        return [title for _, title in headings[:12]]
 
 
 class StructureProposalSchema(BaseModel):

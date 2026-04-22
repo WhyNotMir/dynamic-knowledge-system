@@ -167,6 +167,7 @@ class ArticleBlock(Base):
     section_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     list_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     group_id: Mapped[uuid.UUID | None] = mapped_column(index=True, nullable=True)
+    inline_spans: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     meta_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # True for blocks produced by SynthesisAgent (Phase 7) from a merge of
     # two duplicates. Such blocks are the single exception to invariant § 6.2

@@ -9,12 +9,12 @@
     {
       "title": "Introduction",
       "source_section_path": "Introduction",
-      "fragment_count": 3
+      "fragment_count": 1
     },
     {
       "title": "Methods",
       "source_section_path": "Methods",
-      "fragment_count": 3
+      "fragment_count": 1
     }
   ],
   "article_count": 3,
@@ -27,12 +27,12 @@
     {
       "title": "Introduction",
       "slug": "introduction",
-      "block_count": 3
+      "block_count": 1
     },
     {
       "title": "Methods",
       "slug": "methods",
-      "block_count": 3
+      "block_count": 1
     }
   ]
 }

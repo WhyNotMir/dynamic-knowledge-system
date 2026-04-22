@@ -1,6 +1,7 @@
 import type {
-  Project, Source, StructureProposal,
+  Project, Source, StructureProposal, InboxItem,
   ArticleCandidate, Article, ArticleListItem,
+  StructuralBlock,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -81,6 +82,37 @@ export const api = {
         `/projects/${projectId}/structure/proposals/${proposalId}/confirm-all`,
         { method: "POST" }
       ),
+  },
+
+  inbox: {
+    list: (projectId: string) =>
+      request<InboxItem[]>(`/projects/${projectId}/inbox`),
+  },
+
+  structuralBlocks: {
+    list: (projectId: string) =>
+      request<StructuralBlock[]>(`/projects/${projectId}/structural-blocks`),
+    create: (
+      projectId: string,
+      body: { name: string; description?: string; parent_id?: string | null; position_index?: number }
+    ) =>
+      request<StructuralBlock>(`/projects/${projectId}/structural-blocks`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    update: (
+      projectId: string,
+      blockId: string,
+      body: { name?: string; description?: string; parent_id?: string | null; position_index?: number }
+    ) =>
+      request<StructuralBlock>(`/projects/${projectId}/structural-blocks/${blockId}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    remove: (projectId: string, blockId: string) =>
+      request<void>(`/projects/${projectId}/structural-blocks/${blockId}`, {
+        method: "DELETE",
+      }),
   },
 
   articles: {

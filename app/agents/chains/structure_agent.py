@@ -63,6 +63,43 @@ def _fallback_title(hint: str | None, index: int) -> str:
     return f"Article {index + 1}"
 
 
+def _dedupe_titles(candidates: list[dict[str, Any]]) -> None:
+    """Ensure proposal titles are unique within one proposal.
+
+    PDF heuristics and LLM outputs can easily collapse multiple neighbouring
+    candidates into the same short title. That makes the review screen look
+    broken and later causes confusing article slugs. We keep the first title
+    untouched and only rewrite later duplicates deterministically.
+    """
+    seen: dict[str, int] = {}
+
+    for candidate in candidates:
+        title = " ".join(candidate["proposed_title"].split()).strip() or "Article"
+        base = title
+        key = base.casefold()
+        count = seen.get(key, 0)
+
+        if count:
+            hint = (candidate.get("source_section_path") or "").split(" > ")
+            leaf = hint[-1].strip() if hint else ""
+            leaf_key = leaf.casefold()
+            if leaf and leaf_key != key:
+                title = f"{base}: {leaf}"[:250]
+                dedupe_key = title.casefold()
+                suffix = 2
+                while dedupe_key in seen:
+                    title = f"{base}: {leaf} ({suffix})"[:250]
+                    dedupe_key = title.casefold()
+                    suffix += 1
+                key = dedupe_key
+            else:
+                title = f"{base} ({count + 1})"[:250]
+                key = title.casefold()
+
+        candidate["proposed_title"] = title
+        seen[key] = seen.get(key, 0) + 1
+
+
 def _classify_llm_error(exc: Exception) -> Exception:
     """Map provider-specific errors into our normalised AgentError family.
 
@@ -185,6 +222,8 @@ async def propose_structure(
                 llm_available = False
 
         candidate["proposed_title"] = _fallback_title(hint, index)
+
+    _dedupe_titles(candidates)
 
     titles = [c["proposed_title"] for c in candidates]
     hierarchy: dict[str, list[str]] | None = None

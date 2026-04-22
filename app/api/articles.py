@@ -138,6 +138,7 @@ async def list_articles(
             title=row.Article.title,
             slug=row.Article.slug,
             kind=row.Article.kind,
+            structural_block_id=row.Article.structural_block_id,
             suggested_section=row.Article.suggested_section,
             status=row.Article.status,
             description=row.Article.description,

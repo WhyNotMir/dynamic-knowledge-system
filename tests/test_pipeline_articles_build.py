@@ -20,6 +20,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app.domain.articles.article_builder import _looks_like_noise_text
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.article import Article, ArticleBlock
@@ -29,7 +30,14 @@ from app.models.article_candidate import (
     StructureProposal,
 )
 
-from tests.helpers import confirm_all_candidates, make_docx, unique_docx
+from tests.helpers import confirm_all_candidates, make_docx, make_rich_docx, unique_docx
+
+
+def test_builder_noise_filter_identifies_pdf_artifacts():
+    assert _looks_like_noise_text("2")
+    assert _looks_like_noise_text("<EOS>")
+    assert _looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
+    assert not _looks_like_noise_text("The transformer uses multi-head attention in three different ways.")
 
 
 async def _prepare_ready_proposal(
@@ -166,6 +174,149 @@ async def test_get_article_detail_returns_blocks_ordered(
         # Blocks sorted by position_index (ORM relationship order_by).
         pis = [b["position_index"] for b in detail["blocks"]]
         assert pis == sorted(pis)
+
+
+async def test_build_skips_duplicate_h1_heading_block(
+    client, project, session_factory, tmp_path
+):
+    proposal_id = await _prepare_ready_proposal(
+        client, project, session_factory, tmp_path
+    )
+
+    r = await client.post(
+        f"/projects/{project['id']}/articles/build",
+        json={"proposal_id": str(proposal_id)},
+    )
+    assert r.status_code == 200, r.text
+
+    async with session_factory() as db:
+        articles = (
+            await db.execute(
+                select(Article)
+                .where(Article.project_id == uuid.UUID(project["id"]))
+                .order_by(Article.title)
+            )
+        ).scalars().all()
+
+        intro = next((article for article in articles if article.title == "Introduction"), None)
+        assert intro is not None
+
+        blocks = (
+            await db.execute(
+                select(ArticleBlock)
+                .where(ArticleBlock.article_id == intro.id)
+                .order_by(ArticleBlock.position_index)
+            )
+        ).scalars().all()
+
+    assert blocks, "introduction article should still have body blocks"
+    assert blocks[0].content != "Introduction"
+
+
+async def test_build_marks_small_articles_as_nodes_and_links_structural_block(
+    client, session_factory, tmp_path
+):
+    project_resp = await client.post(
+        "/projects",
+        json={
+            "name": "Node thresholds",
+            "settings": {"min_blocks": 10, "min_chars": 1000},
+        },
+    )
+    project = project_resp.json()
+
+    block_resp = await client.post(
+        f"/projects/{project['id']}/structural-blocks",
+        json={"name": "Introduction"},
+    )
+    assert block_resp.status_code == 201, block_resp.text
+
+    proposal_id = await _prepare_ready_proposal(
+        client, project, session_factory, tmp_path
+    )
+
+    build = await client.post(
+        f"/projects/{project['id']}/articles/build",
+        json={"proposal_id": str(proposal_id)},
+    )
+    assert build.status_code == 200, build.text
+
+    listing = await client.get(f"/projects/{project['id']}/articles")
+    assert listing.status_code == 200, listing.text
+    rows = listing.json()
+    assert rows
+    assert all(row["kind"] == "node" for row in rows)
+
+    intro = next((row for row in rows if row["title"] == "Introduction"), None)
+    assert intro is not None
+    assert intro["structural_block_id"] == block_resp.json()["id"]
+
+
+async def test_build_refreshes_project_summary(
+    client, session_factory, tmp_path
+):
+    created = await client.post("/projects", json={"name": "Summary project"})
+    assert created.status_code == 201, created.text
+    project = created.json()
+
+    proposal_id = await _prepare_ready_proposal(
+        client, project, session_factory, tmp_path
+    )
+
+    build = await client.post(
+        f"/projects/{project['id']}/articles/build",
+        json={"proposal_id": str(proposal_id)},
+    )
+    assert build.status_code == 200, build.text
+
+    detail = await client.get(f"/projects/{project['id']}")
+    assert detail.status_code == 200, detail.text
+    summary = detail.json()["summary"]
+    assert summary
+    assert "Summary project knowledge base overview:" in summary
+
+
+async def test_build_preserves_inline_spans_and_image_refs(
+    client, project, session_factory, tmp_path
+):
+    docx = make_rich_docx(unique_docx(tmp_path))
+    with docx.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (docx.name, fh)},
+        )
+    assert up.status_code == 202, up.text
+    source_id = uuid.UUID(up.json()["id"])
+
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+
+    r = await client.post(f"/projects/{project['id']}/structure/propose")
+    proposal_id = uuid.UUID(r.json()["proposal_id"])
+
+    async with session_factory() as db:
+        await run_structure_proposal(proposal_id, db)
+
+    await confirm_all_candidates(client, project["id"], str(proposal_id))
+
+    build = await client.post(
+        f"/projects/{project['id']}/articles/build",
+        json={"proposal_id": str(proposal_id)},
+    )
+    assert build.status_code == 200, build.text
+    article_id = build.json()["article_ids"][0]
+
+    detail = await client.get(f"/projects/{project['id']}/articles/{article_id}")
+    assert detail.status_code == 200, detail.text
+    blocks = detail.json()["blocks"]
+
+    paragraph = next((block for block in blocks if block["element_type"] == "paragraph"), None)
+    assert paragraph is not None
+    assert {span["style"] for span in paragraph["inline_spans"]} >= {"bold", "italic", "code"}
+
+    image = next((block for block in blocks if block["element_type"] == "image"), None)
+    assert image is not None
+    assert image["meta_json"]["image_ref"].startswith(f"/projects/{project['id']}/sources/assets/")
 
 
 async def test_articles_are_linked_back_to_candidates(

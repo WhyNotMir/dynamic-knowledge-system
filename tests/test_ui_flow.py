@@ -94,6 +94,19 @@ async def test_full_ui_happy_path(client, session_factory, tmp_path):
     assert found is not None
     assert found["status"] == "pending"
 
+    # Inbox v1 mirrors reviewable proposals as `new_candidates` items.
+    r = await client.get(f"/projects/{project_id}/inbox")
+    assert r.status_code == 200
+    inbox = r.json()
+    assert len(inbox) == 1
+    assert inbox[0]["item_type"] == "new_candidates"
+    assert inbox[0]["proposal_id"] == proposal_id
+    assert inbox[0]["status"] == "pending"
+    assert inbox[0]["gate"]["requires_human_review"] is True
+    assert inbox[0]["gate"]["auto_apply_allowed"] is False
+    assert any(action["action"] == "confirm" for action in inbox[0]["gate"]["available_actions"])
+    assert any(action["action"] == "merge" for action in inbox[0]["gate"]["reserved_actions"])
+
     # Worker runs.
     async with session_factory() as db:
         await run_structure_proposal(uuid.UUID(proposal_id), db)
@@ -112,6 +125,13 @@ async def test_full_ui_happy_path(client, session_factory, tmp_path):
         assert c["title"]
         assert c["status"] == "proposed"
         assert isinstance(c["fragment_ids"], list)
+
+    r = await client.get(f"/projects/{project_id}/inbox")
+    assert r.status_code == 200
+    inbox = r.json()
+    assert inbox[0]["status"] == "ready"
+    assert inbox[0]["proposal"]["id"] == proposal_id
+    assert len(inbox[0]["proposal"]["candidates"]) >= 2
 
     # 7. Optional: user edits a candidate's title via PATCH
     first_cand_id = body["candidates"][0]["id"]
@@ -181,4 +201,5 @@ async def test_ui_flow_two_projects_isolated(client, session_factory, tmp_path):
 
     # p2 has no proposals and no articles.
     assert (await client.get(f"/projects/{p2['id']}/structure/proposals")).json() == []
+    assert (await client.get(f"/projects/{p2['id']}/inbox")).json() == []
     assert (await client.get(f"/projects/{p2['id']}/articles")).json() == []

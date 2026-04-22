@@ -13,10 +13,16 @@ Covers:
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.agents.chains.structure_agent import propose_structure
+from app.domain.clustering.center_detector import (
+    _candidate_group_path,
+    _split_large_pdf_group,
+)
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.article_candidate import (
@@ -25,9 +31,10 @@ from app.models.article_candidate import (
     ProposalStatus,
     StructureProposal,
 )
+from app.models.source_fragment import ElementType
 from app.models.source_fragment import SourceFragment
 
-from tests.helpers import make_docx, unique_docx
+from tests.helpers import make_docx, make_multitopic_docx, unique_docx
 
 
 async def _upload_and_ingest(client, project, session_factory, tmp_path) -> uuid.UUID:
@@ -195,3 +202,115 @@ async def test_list_proposals_endpoint(
     assert r2.status_code == 200
     rows = r2.json()
     assert any(row["id"] == proposal_id for row in rows)
+
+
+async def test_proposal_exposes_internal_headings_for_multi_topic_candidate(
+    client, project, session_factory, tmp_path
+):
+    docx = make_multitopic_docx(unique_docx(tmp_path))
+    with docx.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (docx.name, fh)},
+        )
+    source_id = uuid.UUID(up.json()["id"])
+
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+
+    r = await client.post(f"/projects/{project['id']}/structure/propose")
+    proposal_id = uuid.UUID(r.json()["proposal_id"])
+
+    async with session_factory() as db:
+        await run_structure_proposal(proposal_id, db)
+
+    detail = await client.get(
+        f"/projects/{project['id']}/structure/proposals/{proposal_id}"
+    )
+    assert detail.status_code == 200, detail.text
+    proposal = detail.json()
+
+    candidate = next(
+        (
+            c
+            for c in proposal["candidates"]
+            if c["internal_headings"] == ["Architecture", "Worker Layer", "Operations"]
+        ),
+        None,
+    )
+    assert candidate is not None
+
+
+async def test_structure_agent_dedupes_duplicate_titles(monkeypatch):
+    async def fake_title_llm(content: str, hint: str | None) -> str:
+        return "Attention Is All You Need"
+
+    monkeypatch.setattr(
+        "app.agents.chains.structure_agent._propose_title_llm",
+        fake_title_llm,
+    )
+
+    candidates = [
+        {
+            "source_section_path": "Attention Is All You Need",
+            "fragments": [SimpleNamespace(content="doc title")],
+        },
+        {
+            "source_section_path": "Attention Is All You Need > Abstract",
+            "fragments": [SimpleNamespace(content="abstract")],
+        },
+    ]
+
+    result = await propose_structure(candidates)
+
+    assert result[0]["proposed_title"] == "Attention Is All You Need"
+    assert result[1]["proposed_title"] == "Attention Is All You Need: Abstract"
+
+
+def test_pdf_group_path_uses_first_semantic_section_below_source_title():
+    assert (
+        _candidate_group_path(
+            "pdf",
+            "Attention Is All You Need",
+            "Attention Is All You Need > 3 Model Architecture > 3.2 Attention > 3.2.1 Scaled Dot-Product Attention",
+        )
+        == "3 Model Architecture"
+    )
+
+    assert (
+        _candidate_group_path(
+            "pdf",
+            "Attention Is All You Need",
+            "Attention Is All You Need > Abstract",
+        )
+        == "Abstract"
+    )
+
+
+def test_large_pdf_group_is_split_by_major_headings():
+    def make_fragment(index: int, content: str, *, element_type: ElementType, heading_level: int | None = None):
+        return SimpleNamespace(
+            content=content,
+            element_type=element_type,
+            heading_level=heading_level,
+            position_index=index,
+        )
+
+    fragments = [
+        make_fragment(0, "Attention Is All You Need", element_type=ElementType.HEADING, heading_level=1),
+        make_fragment(1, "Prelude " * 220, element_type=ElementType.PARAGRAPH),
+        make_fragment(2, "1 Introduction", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(3, "Intro body " * 220, element_type=ElementType.PARAGRAPH),
+        make_fragment(4, "2 Background", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(5, "Background body " * 220, element_type=ElementType.PARAGRAPH),
+        make_fragment(6, "3 Model Architecture", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(7, "Architecture body " * 260, element_type=ElementType.PARAGRAPH),
+    ]
+
+    groups = _split_large_pdf_group(fragments)
+
+    assert len(groups) == 4
+    assert groups[0][0].content == "Attention Is All You Need"
+    assert groups[1][0].content == "1 Introduction"
+    assert groups[2][0].content == "2 Background"
+    assert groups[3][0].content == "3 Model Architecture"

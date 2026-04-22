@@ -2,6 +2,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,6 +79,19 @@ async def upload_source(
 async def list_sources(project_id: str, db: AsyncSession = Depends(get_db)):
     pid = _parse_uuid(project_id, "project ID")
     return await SourceRepository(db).list_by_project(pid)
+
+
+@router.get("/assets/{asset_name}")
+async def get_project_asset(project_id: str, asset_name: str, db: AsyncSession = Depends(get_db)):
+    pid = _parse_uuid(project_id, "project ID")
+    project = await ProjectRepository(db).get(pid)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    asset_path = file_storage.project_path(pid, asset_name)
+    if not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return FileResponse(asset_path)
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
