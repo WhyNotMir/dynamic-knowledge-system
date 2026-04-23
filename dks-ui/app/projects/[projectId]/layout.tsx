@@ -4,7 +4,7 @@ import { useParams, usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  BookOpen, FileText, Share2,
+  BookOpen, FileText, MessageCircle, Share2,
   ChevronRight, ChevronDown, Layers, ArrowLeft,
 } from "lucide-react";
 import Link from "next/link";
@@ -158,6 +158,7 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
 
   const navItems = [
     { href: `/projects/${projectId}/articles`, icon: BookOpen,  label: "Articles"  },
+    { href: `/projects/${projectId}/ask`,      icon: MessageCircle, label: "Ask" },
     { href: `/projects/${projectId}/sources`,  icon: FileText,  label: "Sources"   },
     { href: `/projects/${projectId}/inbox`,    icon: Layers,    label: "Inbox"     },
     { href: `/projects/${projectId}/graph`,    icon: Share2,    label: "Graph"     },

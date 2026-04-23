@@ -1,7 +1,8 @@
 import type {
   Project, Source, StructureProposal, InboxItem,
   ArticleCandidate, Article, ArticleListItem,
-  StructuralBlock,
+  StructuralBlock, GraphPayload, AskResponse,
+  ConversationListItem, ConversationMessage,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -18,6 +19,60 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // 204 No Content — parsing would throw. Used by DELETE endpoints.
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+async function streamRequest<T>(
+  path: string,
+  init: RequestInit,
+  onEvent?: (event: string, data: Record<string, unknown>) => void
+): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json", ...init.headers },
+    ...init,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`${res.status} ${err}`);
+  }
+  if (!res.body) {
+    throw new Error("Streaming response body is empty.");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalPayload: T | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+
+    for (const frame of frames) {
+      const lines = frame.split("\n");
+      const event = lines.find((line) => line.startsWith("event: "))?.slice(7);
+      const data = lines
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6))
+        .join("\n");
+      if (!event || !data) continue;
+      const payload = JSON.parse(data) as Record<string, unknown>;
+      onEvent?.(event, payload);
+      if (event === "answer") {
+        finalPayload = payload as T;
+      }
+      if (event === "error") {
+        throw new Error(String(payload.detail ?? "Streaming request failed."));
+      }
+    }
+  }
+
+  if (!finalPayload) {
+    throw new Error("Streaming request finished without an answer event.");
+  }
+  return finalPayload;
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
@@ -125,5 +180,61 @@ export const api = {
       request<ArticleListItem[]>(`/projects/${projectId}/articles`),
     get: (projectId: string, articleId: string) =>
       request<Article>(`/projects/${projectId}/articles/${articleId}`),
+    updateAliases: (projectId: string, articleId: string, aliases: string[]) =>
+      request<{ article_id: string; aliases: string[] }>(
+        `/projects/${projectId}/articles/${articleId}/aliases`,
+        { method: "PUT", body: JSON.stringify({ aliases }) }
+      ),
+  },
+
+  graph: {
+    get: (projectId: string) =>
+      request<GraphPayload>(`/projects/${projectId}/graph`),
+  },
+
+  qa: {
+    ask: (
+      projectId: string,
+      body: {
+        question: string;
+        conversation_id?: string;
+        top_k?: number;
+        max_per_article?: number;
+        min_score?: number;
+      }
+    ) =>
+      request<AskResponse>(`/projects/${projectId}/ask`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    askStream: (
+      projectId: string,
+      body: {
+        question: string;
+        conversation_id?: string;
+        top_k?: number;
+        max_per_article?: number;
+        min_score?: number;
+      },
+      onEvent?: (event: string, data: Record<string, unknown>) => void
+    ) =>
+      streamRequest<AskResponse>(
+        `/projects/${projectId}/ask/stream`,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+        onEvent
+      ),
+    listConversations: (projectId: string) =>
+      request<ConversationListItem[]>(`/projects/${projectId}/conversations`),
+    listMessages: (projectId: string, conversationId: string) =>
+      request<ConversationMessage[]>(
+        `/projects/${projectId}/conversations/${conversationId}/messages`
+      ),
+    deleteConversation: (projectId: string, conversationId: string) =>
+      request<void>(`/projects/${projectId}/conversations/${conversationId}`, {
+        method: "DELETE",
+      }),
   },
 };

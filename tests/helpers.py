@@ -149,6 +149,44 @@ def make_multitopic_docx(path: Path) -> Path:
     return path
 
 
+def make_linked_docx(path: Path) -> Path:
+    """Write a DOCX whose second topic explicitly mentions the first one."""
+    doc = Document()
+
+    doc.add_heading("Attention Is All You Need", level=1)
+    doc.add_paragraph(
+        "Attention Is All You Need introduces the transformer architecture and "
+        "establishes the shift away from recurrence in sequence modelling."
+    )
+    doc.add_paragraph(
+        "The article explains how the model uses self-attention, residual "
+        "connections, and feed-forward layers to process tokens efficiently."
+    )
+    doc.add_paragraph(
+        "It also frames the broader impact of the transformer on neural "
+        "sequence transduction tasks and later model families."
+    )
+
+    doc.add_heading("Neural Sequence Transduction Models", level=1)
+    doc.add_paragraph(
+        "Neural sequence transduction models often build directly on ideas "
+        "from Attention Is All You Need when they adopt transformer-based "
+        "architectures for translation and other language tasks."
+    )
+    doc.add_paragraph(
+        "This section compares encoder-decoder systems, training regimes, "
+        "and the practical advantages of attention-centric model design."
+    )
+    doc.add_paragraph(
+        "It closes by discussing how later systems adapted the transformer "
+        "into a more general-purpose family of sequence models."
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    return path
+
+
 def unique_docx(tmp_dir: Path) -> Path:
     return tmp_dir / f"{uuid.uuid4().hex}.docx"
 

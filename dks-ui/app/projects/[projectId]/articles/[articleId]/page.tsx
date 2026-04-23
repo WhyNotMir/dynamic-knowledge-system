@@ -1,5 +1,5 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -7,11 +7,12 @@ import Link from "next/link";
 import { FileText, MapPin, Quote } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { ArticleBlock, StructuralBlock } from "@/lib/types";
+import type { Article, ArticleBlock, GraphPayload, StructuralBlock } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const LIST_PREFIX_RE = /^(([\u2022*•◦-])|(\d+[\.\)]))\s*/;
 const HEADING_PREFIX_RE = /^(\d+(?:\.\d+)*)\s+(.+)$/;
+const MULTISPACE_RE = /\s+/g;
 
 function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -50,6 +51,98 @@ function parseHeadingLabel(value: string) {
     label: match[2].trim(),
     prefix: match[1],
   };
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+type LinkTarget = {
+  articleId: string;
+  label: string;
+};
+
+function collectLinkRanges(content: string, targets: LinkTarget[]) {
+  const candidates: Array<{ start: number; end: number; target: LinkTarget }> = [];
+  for (const target of targets) {
+    const escaped = escapeRegex(target.label);
+    const pattern = /[A-Za-z0-9]/.test(target.label)
+      ? new RegExp(`(?<!\\w)${escaped}(?!\\w)`, "gi")
+      : new RegExp(escaped, "gi");
+    for (const match of content.matchAll(pattern)) {
+      const start = match.index;
+      if (start == null) continue;
+      candidates.push({
+        start,
+        end: start + match[0].length,
+        target,
+      });
+    }
+  }
+
+  candidates.sort((left, right) => {
+    if (left.start !== right.start) return left.start - right.start;
+    return (right.end - right.start) - (left.end - left.start);
+  });
+
+  const accepted: Array<{ start: number; end: number; target: LinkTarget }> = [];
+  let cursor = -1;
+  for (const candidate of candidates) {
+    if (candidate.start < cursor) continue;
+    accepted.push(candidate);
+    cursor = candidate.end;
+  }
+  return accepted;
+}
+
+function renderStyledText(
+  content: string,
+  inlineSpans: ArticleBlock["inline_spans"],
+  segmentStart = 0
+) {
+  if (!inlineSpans || inlineSpans.length === 0) {
+    return content;
+  }
+
+  const relevant = inlineSpans
+    .filter((span) => span.end > segmentStart && span.start < segmentStart + content.length)
+    .map((span) => ({
+      ...span,
+      start: Math.max(span.start - segmentStart, 0),
+      end: Math.min(span.end - segmentStart, content.length),
+    }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+
+  if (relevant.length === 0) {
+    return content;
+  }
+
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+
+  for (const [index, span] of relevant.entries()) {
+    if (span.start > cursor) {
+      parts.push(<span key={`text-${segmentStart}-${index}-${cursor}`}>{content.slice(cursor, span.start)}</span>);
+    }
+
+    const text = content.slice(span.start, span.end);
+    let node: React.ReactNode = text;
+    if (span.style === "bold") {
+      node = <strong>{text}</strong>;
+    } else if (span.style === "italic") {
+      node = <em>{text}</em>;
+    } else if (span.style === "code") {
+      node = <code className="rounded bg-vault-surface px-1 py-0.5 text-[0.95em]">{text}</code>;
+    }
+    parts.push(<span key={`span-${segmentStart}-${index}-${span.start}`}>{node}</span>);
+    cursor = Math.max(cursor, span.end);
+  }
+
+  if (cursor < content.length) {
+    parts.push(<span key={`tail-${segmentStart}-${cursor}`}>{content.slice(cursor)}</span>);
+  }
+
+  return parts;
 }
 
 function isNoiseBlock(block: ArticleBlock) {
@@ -114,35 +207,46 @@ function renderTable(content: string) {
   );
 }
 
-function renderInlineContent(block: ArticleBlock) {
-  if (!block.inline_spans || block.inline_spans.length === 0) {
-    return block.content;
+function renderInlineContent(block: ArticleBlock, projectId: string, linkTargets: LinkTarget[]) {
+  const ranges = collectLinkRanges(block.content, linkTargets);
+  if (ranges.length === 0) {
+    return renderStyledText(block.content, block.inline_spans);
   }
 
-  const ordered = [...block.inline_spans].sort((a, b) => a.start - b.start || a.end - b.end);
   const parts: React.ReactNode[] = [];
   let cursor = 0;
 
-  for (const [index, span] of ordered.entries()) {
-    if (span.start > cursor) {
-      parts.push(<span key={`text-${index}-${cursor}`}>{block.content.slice(cursor, span.start)}</span>);
+  for (const [index, range] of ranges.entries()) {
+    if (range.start > cursor) {
+      parts.push(
+        <span key={`plain-${index}-${cursor}`}>
+          {renderStyledText(block.content.slice(cursor, range.start), block.inline_spans, cursor)}
+        </span>
+      );
     }
 
-    const text = block.content.slice(span.start, span.end);
-    let node: React.ReactNode = text;
-    if (span.style === "bold") {
-      node = <strong>{text}</strong>;
-    } else if (span.style === "italic") {
-      node = <em>{text}</em>;
-    } else if (span.style === "code") {
-      node = <code className="rounded bg-vault-surface px-1 py-0.5 text-[0.95em]">{text}</code>;
-    }
-    parts.push(<span key={`span-${index}-${span.start}`}>{node}</span>);
-    cursor = Math.max(cursor, span.end);
+    parts.push(
+      <Link
+        key={`link-${range.target.articleId}-${range.start}`}
+        href={`/projects/${projectId}/articles/${range.target.articleId}`}
+        className="text-vault-gold underline decoration-vault-gold/35 underline-offset-4 hover:text-vault-text transition-colors"
+      >
+        {renderStyledText(
+          block.content.slice(range.start, range.end),
+          block.inline_spans,
+          range.start
+        )}
+      </Link>
+    );
+    cursor = range.end;
   }
 
   if (cursor < block.content.length) {
-    parts.push(<span key={`tail-${cursor}`}>{block.content.slice(cursor)}</span>);
+    parts.push(
+      <span key={`tail-${cursor}`}>
+        {renderStyledText(block.content.slice(cursor), block.inline_spans, cursor)}
+      </span>
+    );
   }
 
   return parts;
@@ -157,11 +261,15 @@ type HoveredCitation = {
 function Block({
   block,
   index,
+  projectId,
+  linkTargets,
   onHoverCitation,
   onLeaveCitation,
 }: {
   block: ArticleBlock;
   index: number;
+  projectId: string;
+  linkTargets: LinkTarget[];
   onHoverCitation: (value: HoveredCitation | null) => void;
   onLeaveCitation: () => void;
 }) {
@@ -233,10 +341,10 @@ function Block({
     );
   } else if (isQuote) {
     body = (
-      <blockquote className="border-l-2 border-vault-gold/60 pl-4 text-vault-text italic leading-relaxed">
+          <blockquote className="border-l-2 border-vault-gold/60 pl-4 text-vault-text italic leading-relaxed">
         <div className="flex items-start gap-2">
           <Quote size={14} className="mt-1 text-vault-gold shrink-0" />
-          <span>{renderInlineContent(block)}</span>
+          <span>{renderInlineContent(block, projectId, linkTargets)}</span>
         </div>
       </blockquote>
     );
@@ -257,13 +365,13 @@ function Block({
   } else if (isFootnote) {
     body = (
       <p className="text-sm text-vault-muted leading-relaxed border-l border-vault-border pl-3">
-        {renderInlineContent(block)}
+        {renderInlineContent(block, projectId, linkTargets)}
       </p>
     );
   } else {
     body = (
       <p className="text-vault-text leading-relaxed text-[15px]">
-        {renderInlineContent(block)}
+        {renderInlineContent(block, projectId, linkTargets)}
       </p>
     );
   }
@@ -292,13 +400,21 @@ function Block({
 
 export default function ArticlePage() {
   const { projectId, articleId } = useParams<{ projectId: string; articleId: string }>();
+  const qc = useQueryClient();
   const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
   const [hoveredCitation, setHoveredCitation] = useState<HoveredCitation | null>(null);
+  const [aliasModalOpen, setAliasModalOpen] = useState(false);
+  const [aliasDraft, setAliasDraft] = useState("");
+  const [aliasModalDraft, setAliasModalDraft] = useState<string[]>([]);
   const pageRef = useRef<HTMLDivElement | null>(null);
 
   const { data: article, isLoading } = useQuery({
     queryKey: ["article", articleId],
     queryFn: () => api.articles.get(projectId, articleId),
+  });
+  const { data: graph } = useQuery({
+    queryKey: ["graph", projectId],
+    queryFn: () => api.graph.get(projectId),
   });
 
   const { data: structuralBlocks = [] } = useQuery({
@@ -320,6 +436,92 @@ export default function ArticlePage() {
     () => visibleBlocks.filter((block) => block.element_type !== "heading").length,
     [visibleBlocks]
   );
+
+  const titleAlias = useMemo(() => article?.aliases?.[0] ?? article?.title ?? "", [article]);
+  const aliasList = useMemo(() => article?.aliases ?? (article?.title ? [article.title] : []), [article]);
+  const manualAliasList = useMemo(() => aliasList.slice(1), [aliasList]);
+
+  const linkTargets = useMemo(() => {
+    const seen = new Set<string>();
+    const targets: LinkTarget[] = [];
+    for (const node of graph?.nodes ?? []) {
+      if (node.id === articleId) continue;
+      const labels = [node.title, ...(node.aliases ?? [])]
+        .map((label) => label.replace(MULTISPACE_RE, " ").trim())
+        .filter((label) => label.length >= 2);
+      for (const label of labels) {
+        const key = `${node.id}:${label.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        targets.push({ articleId: node.id, label });
+      }
+    }
+    return targets.sort((left, right) => right.label.length - left.label.length);
+  }, [articleId, graph?.nodes]);
+
+  const updateAliases = useMutation({
+    mutationFn: (aliases: string[]) => api.articles.updateAliases(projectId, articleId, aliases),
+    onMutate: async (nextAliases) => {
+      setAliasModalDraft(nextAliases);
+      setAliasDraft("");
+
+      await Promise.all([
+        qc.cancelQueries({ queryKey: ["article", articleId] }),
+        qc.cancelQueries({ queryKey: ["graph", projectId] }),
+      ]);
+
+      const previousArticle = qc.getQueryData<Article>(["article", articleId]);
+      const previousGraph = qc.getQueryData<GraphPayload>(["graph", projectId]);
+      const fullAliases = titleAlias ? [titleAlias, ...nextAliases] : nextAliases;
+
+      if (previousArticle) {
+        qc.setQueryData<Article>(["article", articleId], {
+          ...previousArticle,
+          aliases: fullAliases,
+        });
+      }
+
+      if (previousGraph) {
+        qc.setQueryData<GraphPayload>(["graph", projectId], {
+          ...previousGraph,
+          nodes: previousGraph.nodes.map((node) =>
+            node.id === articleId ? { ...node, aliases: fullAliases } : node
+          ),
+        });
+      }
+
+      return { previousArticle, previousGraph };
+    },
+    onError: (_error, _aliases, context) => {
+      if (context?.previousArticle) {
+        qc.setQueryData(["article", articleId], context.previousArticle);
+      }
+      if (context?.previousGraph) {
+        qc.setQueryData(["graph", projectId], context.previousGraph);
+      }
+      setAliasModalDraft(context?.previousArticle?.aliases?.slice(1) ?? manualAliasList);
+    },
+    onSuccess: (response) => {
+      setAliasModalDraft(response.aliases.slice(1));
+      qc.setQueryData<Article>(["article", articleId], (current) =>
+        current ? { ...current, aliases: response.aliases } : current
+      );
+      qc.setQueryData<GraphPayload>(["graph", projectId], (current) =>
+        current
+          ? {
+              ...current,
+              nodes: current.nodes.map((node) =>
+                node.id === articleId ? { ...node, aliases: response.aliases } : node
+              ),
+            }
+          : current
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["article", articleId] });
+      qc.invalidateQueries({ queryKey: ["graph", projectId] });
+    },
+  });
 
   const tocBlocks = useMemo(
     () => headingBlocks.filter((block) => looksLikeRealHeading(block.content)),
@@ -379,6 +581,27 @@ export default function ArticlePage() {
     };
   }, [tocBlocks]);
 
+  function saveAliases(nextAliases: string[]) {
+    updateAliases.mutate(nextAliases);
+  }
+
+  function addAliasToModal() {
+    const value = aliasDraft.trim();
+    if (!value) return;
+    const exists =
+      titleAlias.toLowerCase() === value.toLowerCase() ||
+      aliasModalDraft.some((alias) => alias.toLowerCase() === value.toLowerCase());
+    if (exists) {
+      setAliasDraft("");
+      return;
+    }
+    saveAliases([...aliasModalDraft, value]);
+  }
+
+  function removeAliasFromModal(value: string) {
+    saveAliases(aliasModalDraft.filter((alias) => alias !== value));
+  }
+
   if (isLoading) {
     return (
       <div className="max-w-3xl mx-auto px-8 py-12 space-y-4">
@@ -409,7 +632,7 @@ export default function ArticlePage() {
   }
 
   return (
-    <div ref={pageRef} className="max-w-6xl mx-auto px-8 py-12 grid gap-10 lg:grid-cols-[minmax(0,1fr)_220px]">
+    <div ref={pageRef} className="max-w-7xl mx-auto px-8 py-12 grid gap-10 lg:grid-cols-[minmax(0,1fr)_280px]">
       {/* Header */}
       <div>
         <motion.div
@@ -471,6 +694,8 @@ export default function ArticlePage() {
               <Block
                 block={block}
                 index={i}
+                projectId={projectId}
+                linkTargets={linkTargets}
                 onHoverCitation={setHoveredCitation}
                 onLeaveCitation={() => setHoveredCitation((current) => (current?.id === block.id ? null : current))}
               />
@@ -479,7 +704,7 @@ export default function ArticlePage() {
         </div>
       </div>
 
-      {(tocBlocks.length > 0 || hoveredCitation) && (
+      {(tocBlocks.length > 0 || aliasList.length > 0) && (
         <aside className="hidden lg:block">
           <div className="sticky top-8 space-y-4">
             {tocBlocks.length > 0 && (
@@ -521,47 +746,120 @@ export default function ArticlePage() {
                 </div>
               </div>
             )}
-
-            <motion.div
-              key={hoveredCitation?.id ?? "idle"}
-              initial={{ opacity: 0, y: 8, scale: 0.985 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-              className="rounded-xl border border-vault-border bg-vault-surface/95 p-4 shadow-[0_10px_24px_rgba(0,0,0,0.14)]"
-            >
-              {hoveredCitation ? (
-                <div className="space-y-2">
-                  <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold/70">
-                    Source
-                  </p>
-                  <div className="space-y-1.5 text-xs font-mono text-vault-muted">
-                    {hoveredCitation.pageNumber && (
-                      <p className="flex items-center gap-2">
-                        <FileText size={11} className="shrink-0" />
-                        <span>p.{hoveredCitation.pageNumber}</span>
-                      </p>
-                    )}
-                    {hoveredCitation.sectionPath && (
-                      <p className="flex items-start gap-2">
-                        <MapPin size={11} className="mt-0.5 shrink-0" />
-                        <span className="leading-5">{hoveredCitation.sectionPath}</span>
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold/70">
-                    Source
-                  </p>
-                  <p className="text-xs font-mono text-vault-muted/80 leading-5">
-                    Hover a block to see where it came from.
-                  </p>
-                </div>
-              )}
-            </motion.div>
+            <div className="rounded-xl border border-vault-border bg-vault-surface p-4 space-y-3">
+              <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold/70">
+                Links
+              </p>
+              <button
+                onClick={() => {
+                  setAliasModalDraft(manualAliasList);
+                  setAliasDraft("");
+                  setAliasModalOpen(true);
+                }}
+                className="w-full rounded-lg border border-vault-border bg-vault-bg px-3 py-2 text-left text-sm text-vault-text hover:border-vault-gold/40 transition-colors"
+              >
+                Manage aliases
+              </button>
+              <p className="text-xs leading-5 text-vault-muted">
+                Mentions of saved aliases inside article text become clickable links.
+              </p>
+            </div>
           </div>
         </aside>
+      )}
+
+      {hoveredCitation && (
+        <div className="hidden lg:block pointer-events-none fixed bottom-6 right-8 z-20 max-w-[360px]">
+          <div className="space-y-1.5 text-xs font-mono text-vault-muted/90 leading-5 transition-all duration-200">
+            {hoveredCitation.pageNumber && (
+              <p className="flex items-center gap-2">
+                <FileText size={11} className="shrink-0 text-vault-gold/70" />
+                <span>p.{hoveredCitation.pageNumber}</span>
+              </p>
+            )}
+            {hoveredCitation.sectionPath && (
+              <p className="flex items-start gap-2">
+                <MapPin size={11} className="mt-0.5 shrink-0 text-vault-gold/70" />
+                <span>{hoveredCitation.sectionPath}</span>
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {aliasModalOpen && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/55 px-6">
+          <div className="w-full max-w-xl rounded-2xl border border-vault-border bg-vault-surface p-6 shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold/70 mb-2">
+                  Aliases
+                </p>
+                <h3 className="text-xl font-semibold text-vault-text">{article.title}</h3>
+              </div>
+              <button
+                onClick={() => setAliasModalOpen(false)}
+                className="rounded-md border border-vault-border px-3 py-1.5 text-sm text-vault-muted hover:text-vault-text transition-colors"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {titleAlias && (
+                  <div className="inline-flex items-center gap-2 rounded-full border border-vault-border px-3 py-1.5 text-sm text-vault-text">
+                    {titleAlias}
+                    <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-vault-gold/70">
+                      title
+                    </span>
+                  </div>
+                )}
+                {aliasModalDraft.map((alias) => (
+                  <div
+                    key={alias}
+                    className="inline-flex items-center gap-2 rounded-full border border-vault-border px-3 py-1.5 text-sm text-vault-text"
+                  >
+                    {alias}
+                    <button
+                      onClick={() => removeAliasFromModal(alias)}
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] text-vault-muted hover:bg-vault-gold/10 hover:text-vault-gold transition-colors"
+                      title="Remove alias"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  value={aliasDraft}
+                  onChange={(event) => setAliasDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addAliasToModal();
+                    }
+                  }}
+                  placeholder="Add alias"
+                  className="w-full rounded-md border border-vault-border bg-vault-bg px-3 py-2 text-sm text-vault-text outline-none placeholder:text-vault-muted"
+                />
+                <button
+                  onClick={addAliasToModal}
+                  disabled={!aliasDraft.trim() || updateAliases.isPending}
+                  className="rounded-md bg-vault-gold px-4 py-2 text-sm font-medium text-vault-bg disabled:opacity-50"
+                >
+                  {updateAliases.isPending ? "Saving..." : "Add"}
+                </button>
+              </div>
+
+              <p className="pt-2 text-xs leading-5 text-vault-muted">
+                The first alias is the article title and stays fixed. Everything else can be removed and controls inline article hyperlinks.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

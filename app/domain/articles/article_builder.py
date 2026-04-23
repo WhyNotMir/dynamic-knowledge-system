@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.chains.title_agent import TitleAgentOutput
+from app.domain.linking.service import refresh_project_links
 from app.models.article import Article, ArticleBlock, ArticleKind, ArticleStatus
 from app.models.article_candidate import (
     ArticleCandidate,
@@ -359,6 +360,7 @@ async def build_articles_from_proposal(
         article_ids.append(article.id)
 
     proposal.status = ProposalStatus.REVIEWED
+    await refresh_project_links(proposal.project_id, db)
     if project is not None:
         article_rows = (
             await db.execute(

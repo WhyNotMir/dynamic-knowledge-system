@@ -4,13 +4,15 @@ import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.domain.articles.article_builder import build_articles_from_proposal
+from app.domain.linking.service import get_article_graph_panels, refresh_project_links
+from app.models.alias import Alias, AliasSource
 from app.models.article import Article, ArticleBlock
 from app.models.article_candidate import (
     ArticleCandidate,
@@ -21,6 +23,9 @@ from app.models.article_candidate import (
 from app.models.source_fragment import SourceFragment
 from app.schemas.article import (
     ArticleDetail,
+    ArticleAliasesResponse,
+    ArticleAliasesUpdate,
+    ArticleLinkSummary,
     ArticleListItem,
     BuildArticlesRequest,
     BuildArticlesResponse,
@@ -167,4 +172,106 @@ async def get_article(
     if article is None:
         raise HTTPException(status_code=404, detail="Article not found")
 
-    return article
+    referenced_by_rows, related_rows = await get_article_graph_panels(article.id, db)
+
+    return ArticleDetail(
+        id=article.id,
+        project_id=article.project_id,
+        candidate_id=article.candidate_id,
+        structural_block_id=article.structural_block_id,
+        title=article.title,
+        slug=article.slug,
+        kind=article.kind,
+        suggested_section=article.suggested_section,
+        description=article.description,
+        summary=article.summary,
+        status=article.status,
+        aliases=article.aliases,
+        referenced_by=[
+            ArticleLinkSummary.model_validate(row) for row in referenced_by_rows
+        ],
+        related_articles=[
+            ArticleLinkSummary.model_validate(row) for row in related_rows
+        ],
+        revision_count=article.revision_count,
+        blocks=article.blocks,
+        created_at=article.created_at,
+    )
+
+
+@router.put("/{article_id}/aliases", response_model=ArticleAliasesResponse)
+async def update_article_aliases(
+    project_id: uuid.UUID,
+    article_id: uuid.UUID,
+    body: ArticleAliasesUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    article = (
+        await db.execute(
+            select(Article).where(
+                Article.id == article_id,
+                Article.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if article is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for alias in body.aliases:
+        value = " ".join(alias.split()).strip()
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(value)
+
+    existing_auto_aliases = {
+        row[0].casefold()
+        for row in (
+            await db.execute(
+                select(Alias.text).where(
+                    Alias.article_id == article.id,
+                    Alias.source == AliasSource.AUTO,
+                )
+            )
+        ).all()
+    }
+    manual_aliases = [
+        alias for alias in cleaned if alias.casefold() not in existing_auto_aliases
+    ]
+
+    await db.execute(
+        delete(Alias).where(
+            Alias.article_id == article.id,
+            Alias.source == AliasSource.MANUAL,
+        )
+    )
+    if manual_aliases:
+        db.add_all(
+            [
+                Alias(
+                    article_id=article.id,
+                    text=alias,
+                    confidence=1.0,
+                    source=AliasSource.MANUAL,
+                )
+                for alias in manual_aliases
+            ]
+        )
+    await db.flush()
+    await refresh_project_links(project_id, db)
+    await db.commit()
+    result = await db.execute(
+        select(Article).where(Article.id == article.id)
+    )
+    refreshed_article = result.scalar_one()
+    await db.refresh(refreshed_article)
+
+    return ArticleAliasesResponse(
+        article_id=refreshed_article.id,
+        aliases=refreshed_article.aliases or [],
+    )

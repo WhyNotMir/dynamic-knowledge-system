@@ -149,9 +149,23 @@ export interface Article {
   summary?: string | null;
   status: ArticleStatus;
   aliases?: string[] | null;
+  referenced_by?: ArticleLinkSummary[];
+  related_articles?: ArticleLinkSummary[];
   revision_count?: number;
   blocks: ArticleBlock[];
   created_at: string;
+}
+
+export interface ArticleLinkSummary {
+  id: string;
+  title: string;
+  slug: string;
+  kind?: ArticleKind;
+  structural_block_id?: string | null;
+  suggested_section?: string | null;
+  description?: string | null;
+  score?: number | null;
+  source_block_id?: string | null;
 }
 
 export interface ArticleListItem {
@@ -177,4 +191,68 @@ export interface StructuralBlock {
   children: StructuralBlock[];
   created_at: string;
   updated_at: string;
+}
+
+export interface GraphNode {
+  id: string;
+  title: string;
+  slug: string;
+  kind: ArticleKind;
+  structural_block_id?: string | null;
+  suggested_section?: string | null;
+  description?: string | null;
+  aliases?: string[] | null;
+}
+
+export interface GraphEdge {
+  id: string;
+  from_article_id: string;
+  to_article_id: string;
+  kind: "hard" | "soft";
+  source_block_id?: string | null;
+  score?: number | null;
+}
+
+export interface GraphPayload {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface AskCitation {
+  block_id: string;
+  article_id: string;
+  article_title: string;
+  fragment_id: string;
+  content: string;
+  element_type: ElementType;
+  page_number: number | null;
+  section_path: string | null;
+  score: number;
+}
+
+export interface AskResponse {
+  conversation_id: string;
+  user_message_id: string;
+  assistant_message_id: string;
+  answer: string;
+  citations: AskCitation[];
+  confidence: number;
+  insufficient_context: boolean;
+}
+
+export interface ConversationListItem {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  position_index: number;
+  meta_json: Record<string, unknown> | null;
+  created_at: string;
 }

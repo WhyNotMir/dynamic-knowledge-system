@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.article import ArticleKind, ArticleStatus
 from app.models.source_fragment import ElementType
@@ -16,6 +16,15 @@ class BuildArticlesRequest(BaseModel):
 class BuildArticlesResponse(BaseModel):
     article_ids: list[uuid.UUID]
     count: int
+
+
+class ArticleAliasesUpdate(BaseModel):
+    aliases: list[str]
+
+
+class ArticleAliasesResponse(BaseModel):
+    article_id: uuid.UUID
+    aliases: list[str]
 
 
 class ArticleBlockSchema(BaseModel):
@@ -53,6 +62,18 @@ class ArticleListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ArticleLinkSummary(BaseModel):
+    id: uuid.UUID
+    title: str
+    slug: str
+    kind: ArticleKind = ArticleKind.ARTICLE
+    structural_block_id: uuid.UUID | None = None
+    suggested_section: str | None = None
+    description: str | None = None
+    score: float | None = None
+    source_block_id: uuid.UUID | None = None
+
+
 class ArticleDetail(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -66,6 +87,8 @@ class ArticleDetail(BaseModel):
     summary: str | None = None
     status: ArticleStatus
     aliases: list[str] | None = None
+    referenced_by: list[ArticleLinkSummary] = Field(default_factory=list)
+    related_articles: list[ArticleLinkSummary] = Field(default_factory=list)
     revision_count: int = 0
     blocks: list[ArticleBlockSchema]
     created_at: datetime

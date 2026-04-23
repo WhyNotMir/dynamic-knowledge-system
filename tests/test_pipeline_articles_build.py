@@ -23,14 +23,22 @@ from sqlalchemy import select
 from app.domain.articles.article_builder import _looks_like_noise_text
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
+from app.models.alias import Alias
 from app.models.article import Article, ArticleBlock
 from app.models.article_candidate import (
     ArticleCandidate,
     ProposalStatus,
     StructureProposal,
 )
+from app.models.graph_edge import EdgeKind, GraphEdge
 
-from tests.helpers import confirm_all_candidates, make_docx, make_rich_docx, unique_docx
+from tests.helpers import (
+    confirm_all_candidates,
+    make_docx,
+    make_linked_docx,
+    make_rich_docx,
+    unique_docx,
+)
 
 
 def test_builder_noise_filter_identifies_pdf_artifacts():
@@ -317,6 +325,94 @@ async def test_build_preserves_inline_spans_and_image_refs(
     image = next((block for block in blocks if block["element_type"] == "image"), None)
     assert image is not None
     assert image["meta_json"]["image_ref"].startswith(f"/projects/{project['id']}/sources/assets/")
+
+
+async def test_build_refreshes_aliases_and_graph_links(
+    client, project, session_factory, tmp_path, mock_embeddings, mock_structure_agent
+):
+    docx = make_linked_docx(unique_docx(tmp_path))
+    with docx.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (docx.name, fh)},
+        )
+    assert up.status_code == 202, up.text
+    source_id = uuid.UUID(up.json()["id"])
+
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+
+    proposal = await client.post(f"/projects/{project['id']}/structure/propose")
+    assert proposal.status_code == 202, proposal.text
+    proposal_id = uuid.UUID(proposal.json()["proposal_id"])
+
+    async with session_factory() as db:
+        await run_structure_proposal(proposal_id, db)
+
+    await confirm_all_candidates(client, project["id"], str(proposal_id))
+
+    build = await client.post(
+        f"/projects/{project['id']}/articles/build",
+        json={"proposal_id": str(proposal_id)},
+    )
+    assert build.status_code == 200, build.text
+
+    listing = await client.get(f"/projects/{project['id']}/articles")
+    assert listing.status_code == 200, listing.text
+    rows = listing.json()
+    assert len(rows) >= 2
+
+    attention = next(row for row in rows if row["title"] == "Attention Is All You Need")
+    models = next(row for row in rows if row["title"] == "Neural Sequence Transduction Models")
+
+    attention_detail = await client.get(
+        f"/projects/{project['id']}/articles/{attention['id']}"
+    )
+    assert attention_detail.status_code == 200, attention_detail.text
+    attention_body = attention_detail.json()
+    assert "Attention Is All You Need" in attention_body["aliases"]
+    assert any(
+        item["id"] == models["id"] for item in attention_body["referenced_by"]
+    )
+    assert any(
+        item["id"] == models["id"] for item in attention_body["related_articles"]
+    )
+
+    async with session_factory() as db:
+        aliases = (
+            await db.execute(
+                select(Alias)
+                .where(Alias.article_id == uuid.UUID(attention["id"]))
+                .order_by(Alias.text)
+            )
+        ).scalars().all()
+        assert "Attention Is All You Need" in [alias.text for alias in aliases]
+
+        hard_edges = (
+            await db.execute(
+                select(GraphEdge)
+                .where(
+                    GraphEdge.kind == EdgeKind.HARD,
+                    GraphEdge.from_article_id == uuid.UUID(models["id"]),
+                    GraphEdge.to_article_id == uuid.UUID(attention["id"]),
+                )
+            )
+        ).scalars().all()
+        assert hard_edges
+        assert all(edge.source_block_id is not None for edge in hard_edges)
+
+        soft_edges = (
+            await db.execute(
+                select(GraphEdge)
+                .where(
+                    GraphEdge.kind == EdgeKind.SOFT,
+                    GraphEdge.from_article_id == uuid.UUID(attention["id"]),
+                    GraphEdge.to_article_id == uuid.UUID(models["id"]),
+                )
+            )
+        ).scalars().all()
+        assert soft_edges
+        assert all(edge.score is not None for edge in soft_edges)
 
 
 async def test_articles_are_linked_back_to_candidates(

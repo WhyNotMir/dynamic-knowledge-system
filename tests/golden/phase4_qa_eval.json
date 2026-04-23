@@ -1,0 +1,23 @@
+[
+  {
+    "id": "hardware_training",
+    "question": "Which hardware is mentioned for training?",
+    "expected_insufficient_context": false,
+    "expected_terms": ["NVIDIA", "P100"],
+    "min_citations": 1
+  },
+  {
+    "id": "optimizer",
+    "question": "Which optimizer is described?",
+    "expected_insufficient_context": false,
+    "expected_terms": ["Adam"],
+    "min_citations": 1
+  },
+  {
+    "id": "unanswerable_lunar_geology",
+    "question": "What does the project say about lunar geology?",
+    "expected_insufficient_context": true,
+    "expected_terms": [],
+    "min_citations": 0
+  }
+]
