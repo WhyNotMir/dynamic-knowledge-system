@@ -22,55 +22,26 @@ import { cn, formatDate } from "@/lib/utils";
 
 
 function InboxGatePanel({ item }: { item: InboxItem }) {
+  const availableLabels = item.gate.available_actions.map((action) => action.label).join(" · ");
+
   return (
     <div className="mb-6 rounded-lg border border-vault-gold/20 bg-vault-gold-05 p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold">
-            Human Review Gate
+            Review Required
           </p>
           <p className="mt-2 text-sm text-vault-text">
-            {item.gate.reason}
+            Confirm the candidates you want to keep, then build articles.
+          </p>
+          <p className="mt-2 text-xs font-mono text-vault-muted">
+            {availableLabels}
           </p>
         </div>
         <span className="shrink-0 rounded-full border border-vault-gold/25 px-2 py-1 text-[11px] font-mono text-vault-gold">
           Manual
         </span>
       </div>
-
-      <div className="mt-4">
-        <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-vault-muted mb-2">
-          Available now
-        </p>
-        <div className="flex flex-wrap gap-1.5">
-          {item.gate.available_actions.map((action) => (
-            <span
-              key={action.action}
-              className="rounded-full border border-vault-border bg-vault-bg px-2.5 py-1 text-[11px] font-mono text-vault-muted"
-            >
-              {action.label}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {item.gate.reserved_actions.length > 0 && (
-        <div className="mt-4">
-          <p className="text-[11px] font-mono uppercase tracking-[0.18em] text-vault-muted mb-2">
-            Reserved destructive actions
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {item.gate.reserved_actions.map((action) => (
-              <span
-                key={action.action}
-                className="rounded-full border border-vault-error/20 bg-vault-surface px-2.5 py-1 text-[11px] font-mono text-vault-muted"
-              >
-                {action.label}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -239,6 +210,7 @@ function ProposalPanel({ item, projectId }: { item: InboxItem; projectId: string
     mutationFn: () => api.articles.build(projectId, proposal.id),
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: ["articles", projectId] });
+      qc.invalidateQueries({ queryKey: ["articles-sidebar", projectId] });
       qc.invalidateQueries({ queryKey: ["inbox", projectId] });
       qc.invalidateQueries({ queryKey: ["proposals", projectId] });
       toast.success(`Built ${d.count} articles`);
@@ -316,6 +288,38 @@ function ProposalPanel({ item, projectId }: { item: InboxItem; projectId: string
           </div>
         )}
       </div>
+
+      <AnimatePresence initial={false}>
+        {build.isPending && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="mb-6 rounded-xl border border-vault-gold/25 bg-vault-gold-05 px-4 py-3"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <motion.span
+                  className="h-2.5 w-2.5 rounded-full bg-vault-gold"
+                  animate={{ opacity: [0.35, 1, 0.35], scale: [0.9, 1.05, 0.9] }}
+                  transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                />
+                <p className="text-sm text-vault-text">Building articles…</p>
+              </div>
+              <p className="text-xs font-mono text-vault-gold">in progress</p>
+            </div>
+            <div className="mt-3 h-1 overflow-hidden rounded-full bg-vault-bg">
+              <motion.div
+                className="h-full rounded-full bg-vault-gold/80"
+                animate={{ opacity: [0.35, 0.8, 0.35] }}
+                transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                style={{ width: "100%" }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {Object.entries(sections).map(([section, candidates]) => (
         <ReviewSection

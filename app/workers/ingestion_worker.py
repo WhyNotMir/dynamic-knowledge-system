@@ -4,6 +4,7 @@ from arq.connections import RedisSettings
 from loguru import logger
 
 from app.agents.base import configure_langsmith
+from app.agents.graph.checkpointer import ensure_langgraph_checkpoint_schema
 from app.agents.graph.ingest_pipeline import (
     create_ingest_pipeline_state,
     resolve_job_project_id,
@@ -16,6 +17,7 @@ async def _startup(ctx: dict) -> None:
     # Bootstrap LangSmith tracing inside the arq worker process so any
     # agent call from a background job is traced (Phase 0 Slice B).
     configure_langsmith()
+    await ensure_langgraph_checkpoint_schema()
 
 
 async def ingest_source(ctx: dict, source_id_str: str) -> None:

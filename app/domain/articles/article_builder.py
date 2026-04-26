@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.agents.chains.title_agent import TitleAgentOutput
+from app.agents.chains.title_agent import TitleAgentOutput, enrich_candidate_metadata
 from app.domain.linking.service import refresh_project_links
 from app.models.article import Article, ArticleBlock, ArticleKind, ArticleStatus
 from app.models.article_candidate import (
@@ -63,6 +63,21 @@ def _looks_like_noise_text(value: str | None) -> bool:
         return True
 
     return False
+
+
+def _is_meaningful_body_fragment(fragment) -> bool:
+    if fragment is None:
+        return False
+    if _looks_like_noise_text(fragment.content):
+        return False
+    return fragment.element_type in {
+        ElementType.PARAGRAPH,
+        ElementType.LIST_ITEM,
+        ElementType.TABLE,
+        ElementType.QUOTE,
+        ElementType.CODE_BLOCK,
+        ElementType.IMAGE,
+    }
 
 
 def _candidate_description(candidate_fragments: list[ArticleCandidateFragment]) -> str | None:
@@ -240,12 +255,19 @@ async def build_articles_from_proposal(
             db, proposal.project_id, base_slug, slugs_in_pass
         )
 
-        block_count = len(candidate.candidate_fragments)
-        char_count = sum(
-            len(item.fragment.content)
+        body_fragments = [
+            item.fragment
             for item in candidate.candidate_fragments
-            if item.fragment is not None
-        )
+            if _is_meaningful_body_fragment(item.fragment)
+        ]
+        if not body_fragments:
+            logger.warning(
+                f"Skipping candidate {candidate.id}: no meaningful body fragments after noise filtering"
+            )
+            continue
+
+        block_count = len(body_fragments)
+        char_count = sum(len(fragment.content) for fragment in body_fragments)
         article_kind = (
             ArticleKind.NODE
             if block_count < min_blocks or char_count < min_chars
@@ -262,15 +284,19 @@ async def build_articles_from_proposal(
                 item.fragment for item in candidate.candidate_fragments if item.fragment is not None
             ],
         }
-        # Build is the user's synchronous "materialise content now" action.
-        # Keep it fast and deterministic: metadata enrichment can happen in a
-        # separate async pass later, but the critical path must not depend on
-        # dozens of network round-trips.
-        metadata = _fallback_metadata(
-            candidate,
-            candidate.candidate_fragments,
-            list(available_structural_blocks),
-        )
+        try:
+            metadata = await enrich_candidate_metadata(
+                project_name=project.name if project is not None else "Knowledge Base",
+                kb_summary=project.summary if project is not None else None,
+                candidate=candidate_payload,
+                available_blocks=list(available_structural_blocks),
+            )
+        except Exception:
+            metadata = _fallback_metadata(
+                candidate,
+                candidate.candidate_fragments,
+                list(available_structural_blocks),
+            )
 
         if metadata.suggested_structural_block or candidate.suggested_section:
             result = await db.execute(
@@ -282,26 +308,12 @@ async def build_articles_from_proposal(
             )
             structural_block_id = result.scalar_one_or_none()
 
-        article = Article(
-            project_id=proposal.project_id,
-            candidate_id=candidate.id,
-            title=metadata.title,
-            slug=slug,
-            description=metadata.description or _candidate_description(candidate.candidate_fragments),
-            suggested_section=candidate.suggested_section,
-            kind=article_kind,
-            status=ArticleStatus.DRAFT,
-            structural_block_id=structural_block_id,
-        )
-        db.add(article)
-        await db.flush()
-
         candidate_fragments = sorted(
             candidate.candidate_fragments,
             key=lambda item: item.position_index,
         )
 
-        blocks: list[ArticleBlock] = []
+        prepared_blocks: list[tuple] = []
         candidate_title_key = _normalise_heading_text(candidate.title)
         source_heading_key = _normalise_heading_text(candidate.source_section_path)
         skipped_title_heading = False
@@ -332,28 +344,53 @@ async def build_articles_from_proposal(
             # Invariant § 6.1 — `source_position_index` mirrors the origin
             # fragment's `position_index`. Invariant CI asserts
             # monotonicity per (source_id, article_id).
-            blocks.append(
-                ArticleBlock(
-                    article_id=article.id,
-                    fragment_id=fragment.id,
-                    content=fragment.content,
-                    element_type=fragment.element_type,
-                    position_index=len(blocks),
-                    source_position_index=fragment.position_index,
-                    page_number=fragment.page_number,
-                    section_path=fragment.section_path,
-                    list_level=fragment.list_level,
-                    group_id=fragment.group_id,
-                    inline_spans=fragment.inline_spans,
-                    meta_json=fragment.meta_json,
-                    synthesized=False,
+            prepared_blocks.append(
+                (
+                    fragment,
+                    {
+                        "fragment_id": fragment.id,
+                        "content": fragment.content,
+                        "element_type": fragment.element_type,
+                        "position_index": len(prepared_blocks),
+                        "source_position_index": fragment.position_index,
+                        "page_number": fragment.page_number,
+                        "section_path": fragment.section_path,
+                        "list_level": fragment.list_level,
+                        "group_id": fragment.group_id,
+                        "inline_spans": fragment.inline_spans,
+                        "meta_json": fragment.meta_json,
+                        "synthesized": False,
+                    },
                 )
             )
 
-        if not blocks:
-            raise ValueError(
-                f"Candidate {candidate.id} has no fragments and cannot be converted into an article."
+        if not any(_is_meaningful_body_fragment(fragment) for fragment, _ in prepared_blocks):
+            logger.warning(
+                f"Skipping candidate {candidate.id}: article body collapses to headings/captions only"
             )
+            continue
+
+        article = Article(
+            project_id=proposal.project_id,
+            candidate_id=candidate.id,
+            title=metadata.title,
+            slug=slug,
+            description=metadata.description or _candidate_description(candidate.candidate_fragments),
+            suggested_section=candidate.suggested_section,
+            kind=article_kind,
+            status=ArticleStatus.DRAFT,
+            structural_block_id=structural_block_id,
+        )
+        db.add(article)
+        await db.flush()
+
+        blocks = [
+            ArticleBlock(
+                article_id=article.id,
+                **payload,
+            )
+            for _, payload in prepared_blocks
+        ]
 
         db.add_all(blocks)
         await db.flush()

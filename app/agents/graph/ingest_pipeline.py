@@ -4,10 +4,10 @@ import uuid
 from typing import Literal, cast
 
 from loguru import logger
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
 
+from app.agents.graph.checkpointer import SQLAlchemyCheckpointSaver
 from app.agents.graph.runtime import append_event, make_base_state, persist_buffered_events
 from app.agents.state import IngestPipelineState
 from app.database import AsyncSessionLocal
@@ -19,7 +19,9 @@ from app.models.source import Source
 
 JobKind = Literal["ingest_source", "propose_structure"]
 
-_INGEST_PIPELINE_CHECKPOINTER = MemorySaver()
+_INGEST_PIPELINE_CHECKPOINTER = SQLAlchemyCheckpointSaver(
+    session_factory=lambda: AsyncSessionLocal(),
+)
 
 
 def create_ingest_pipeline_state(
@@ -249,10 +251,9 @@ async def resolve_job_project_id(
 def get_ingest_pipeline_checkpointer():
     """Return the shared checkpointer for the ingest/propose graph.
 
-    Slice C uses LangGraph's in-memory saver so runs have resumability semantics
-    and a stable checkpoint contract without yet introducing a new external
-    dependency. Swapping this to a Postgres saver later should not require
-    changing callers.
+    Phase 2 hardening uses a SQLAlchemy-backed saver so checkpoints survive
+    worker restarts. The saver keeps a MemorySaver mirror as a low-friction
+    fallback for mocked sessions in tests.
     """
 
     return _INGEST_PIPELINE_CHECKPOINTER

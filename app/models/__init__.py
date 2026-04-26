@@ -21,6 +21,7 @@ from app.models.anomaly import Anomaly, AnomalyKind, AnomalyStatus, AnomalyTarge
 from app.models.revisions import ArticleRevision, BlockRevision, RevisionReason
 from app.models.ingestion_event import IngestionEvent, IngestionEventLevel
 from app.models.conversation import Conversation, Message, MessageRole
+from app.models.langgraph_checkpoint import LangGraphCheckpoint
 
 __all__ = [
     # Core
@@ -73,4 +74,6 @@ __all__ = [
     "Conversation",
     "Message",
     "MessageRole",
+    # LangGraph persistence (Phase 2 hardening)
+    "LangGraphCheckpoint",
 ]

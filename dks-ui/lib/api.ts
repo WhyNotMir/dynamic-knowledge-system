@@ -2,6 +2,7 @@ import type {
   Project, Source, StructureProposal, InboxItem,
   ArticleCandidate, Article, ArticleListItem,
   StructuralBlock, GraphPayload, AskResponse,
+  ArticleSidebarGroup,
   ConversationListItem, ConversationMessage,
 } from "./types";
 
@@ -176,8 +177,14 @@ export const api = {
         `/projects/${projectId}/articles/build`,
         { method: "POST", body: JSON.stringify({ proposal_id: proposalId }) }
       ),
+    deleteAll: (projectId: string) =>
+      request<{ deleted_count: number }>(`/projects/${projectId}/articles`, {
+        method: "DELETE",
+      }),
     list: (projectId: string) =>
       request<ArticleListItem[]>(`/projects/${projectId}/articles`),
+    sidebar: (projectId: string) =>
+      request<ArticleSidebarGroup[]>(`/projects/${projectId}/articles/sidebar`),
     get: (projectId: string, articleId: string) =>
       request<Article>(`/projects/${projectId}/articles/${articleId}`),
     updateAliases: (projectId: string, articleId: string, aliases: string[]) =>

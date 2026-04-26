@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from app.agents.chains.structure_agent import propose_structure
 from app.domain.clustering.center_detector import (
     _candidate_group_path,
+    _merge_pdf_nested_section_groups,
     _split_large_pdf_group,
 )
 from app.domain.articles.structure_service import run_structure_proposal
@@ -299,11 +300,11 @@ def test_large_pdf_group_is_split_by_major_headings():
     fragments = [
         make_fragment(0, "Attention Is All You Need", element_type=ElementType.HEADING, heading_level=1),
         make_fragment(1, "Prelude " * 220, element_type=ElementType.PARAGRAPH),
-        make_fragment(2, "1 Introduction", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(2, "1 Introduction", element_type=ElementType.HEADING, heading_level=1),
         make_fragment(3, "Intro body " * 220, element_type=ElementType.PARAGRAPH),
-        make_fragment(4, "2 Background", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(4, "2 Background", element_type=ElementType.HEADING, heading_level=1),
         make_fragment(5, "Background body " * 220, element_type=ElementType.PARAGRAPH),
-        make_fragment(6, "3 Model Architecture", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(6, "3 Model Architecture", element_type=ElementType.HEADING, heading_level=1),
         make_fragment(7, "Architecture body " * 260, element_type=ElementType.PARAGRAPH),
     ]
 
@@ -314,3 +315,35 @@ def test_large_pdf_group_is_split_by_major_headings():
     assert groups[1][0].content == "1 Introduction"
     assert groups[2][0].content == "2 Background"
     assert groups[3][0].content == "3 Model Architecture"
+
+
+def test_pdf_nested_section_groups_merge_back_into_parent_chapter():
+    source_id = uuid.uuid4()
+
+    def make_fragment(index: int, content: str):
+        return SimpleNamespace(
+            source_id=source_id,
+            content=content,
+            element_type=ElementType.PARAGRAPH,
+            heading_level=None,
+            position_index=index,
+        )
+
+    section_groups = {
+        (source_id, "pdf", "3 Model Architecture"): [
+            make_fragment(0, "Architecture intro " * 40),
+        ],
+        (source_id, "pdf", "3.2 Attention"): [
+            make_fragment(1, "Attention body " * 40),
+        ],
+        (source_id, "pdf", "3.2.3 Applications of Attention in our Model"): [
+            make_fragment(2, "Applications body " * 40),
+        ],
+    }
+
+    merged = _merge_pdf_nested_section_groups(section_groups)
+
+    assert len(merged) == 1
+    only_key = next(iter(merged))
+    assert only_key[2] == "3 Model Architecture"
+    assert len(merged[only_key]) == 3

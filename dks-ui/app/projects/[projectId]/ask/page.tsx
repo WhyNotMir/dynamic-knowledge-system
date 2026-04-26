@@ -185,16 +185,11 @@ export default function AskPage() {
         <main className="space-y-8">
           <section className="space-y-4">
             <p className="text-xs font-mono uppercase tracking-[0.28em] text-vault-gold">
-              Strict RAG Q&A
+              Ask
             </p>
             <h1 className="text-display text-4xl font-semibold leading-tight text-vault-text">
               Ask the knowledge base
             </h1>
-            <p className="max-w-2xl text-sm leading-7 text-vault-muted">
-              Answers are grounded in retrieved article blocks. If the base
-              does not contain enough evidence, the answer is marked as
-              insufficient context.
-            </p>
           </section>
 
           <section className="rounded-2xl border border-vault-border bg-vault-surface p-4 shadow-[0_18px_60px_rgba(0,0,0,0.18)]">
@@ -331,18 +326,12 @@ export default function AskPage() {
           ) : isFreshChat ? (
             <section className="rounded-2xl border border-dashed border-vault-border bg-vault-surface/40 p-8 text-center">
               <MessageCircle className="mx-auto mb-3 text-vault-gold/70" size={24} />
-              <p className="text-vault-text">You are starting a fresh conversation.</p>
-              <p className="mt-2 text-sm text-vault-muted">
-                Ask a new question below, or reopen any recent chat from the sidebar.
-              </p>
+              <p className="text-vault-text">Start a new conversation.</p>
             </section>
           ) : (
             <section className="rounded-2xl border border-dashed border-vault-border bg-vault-surface/40 p-8 text-center">
               <MessageCircle className="mx-auto mb-3 text-vault-gold/70" size={24} />
-              <p className="text-vault-text">Ask a question to retrieve evidence from your articles.</p>
-              <p className="mt-2 text-sm text-vault-muted">
-                The first version is retrieval-grounded and citation-first.
-              </p>
+              <p className="text-vault-text">Ask a question.</p>
             </section>
           )}
         </main>
@@ -350,7 +339,7 @@ export default function AskPage() {
         <aside className="space-y-4">
           <div className="rounded-2xl border border-vault-border bg-vault-surface p-5">
             <p className="mb-4 text-xs font-mono uppercase tracking-[0.22em] text-vault-gold/70">
-              Try asking
+              Examples
             </p>
             <div className="space-y-2">
               {EXAMPLES.map((example) => (
@@ -434,7 +423,7 @@ export default function AskPage() {
               </div>
             ) : (
               <p className="text-sm leading-6 text-vault-muted">
-                Ask your first question to start a saved conversation.
+                No conversations yet.
               </p>
             )}
           </div>

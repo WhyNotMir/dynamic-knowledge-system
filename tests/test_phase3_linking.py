@@ -82,3 +82,22 @@ async def test_manual_alias_update_roundtrips_through_article_detail(
     aliases = detail.json()["aliases"]
     assert "Transformer Paper" in aliases
     assert aliases.count("Transformer Paper") == 1
+
+
+async def test_manual_alias_update_filters_noisy_generic_aliases(
+    client, project, session_factory, tmp_path, mock_embeddings, mock_structure_agent
+):
+    rows = await _prepare_linked_articles(
+        client, project, session_factory, tmp_path
+    )
+    attention = next(row for row in rows if row["title"] == "Attention Is All You Need")
+
+    update = await client.put(
+        f"/projects/{project['id']}/articles/{attention['id']}/aliases",
+        json={"aliases": ["AIAYN", "Section", "A", "%%%"]},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["aliases"] == [
+        "Attention Is All You Need",
+        "AIAYN",
+    ]

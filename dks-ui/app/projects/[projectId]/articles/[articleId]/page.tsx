@@ -4,95 +4,63 @@ import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { FileText, MapPin, Quote } from "lucide-react";
+import { Quote } from "lucide-react";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Article, ArticleBlock, GraphPayload, StructuralBlock } from "@/lib/types";
+import type { Article, ArticleBlock } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const LIST_PREFIX_RE = /^(([\u2022*•◦-])|(\d+[\.\)]))\s*/;
-const HEADING_PREFIX_RE = /^(\d+(?:\.\d+)*)\s+(.+)$/;
-const MULTISPACE_RE = /\s+/g;
+const GENERIC_ALIAS_TOKENS = new Set([
+  "abstract",
+  "appendix",
+  "article",
+  "background",
+  "chapter",
+  "conclusion",
+  "discussion",
+  "figure",
+  "general",
+  "introduction",
+  "method",
+  "methods",
+  "references",
+  "results",
+  "section",
+  "summary",
+  "table",
+]);
 
 function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function looksLikeRealHeading(value: string) {
-  const stripped = normalizeText(value);
-  if (!stripped || stripped.length > 90) return false;
+function isReasonableManualAlias(value: string) {
+  const collapsed = normalizeText(value);
+  if (!collapsed) return false;
+  if (collapsed.length < 2 || collapsed.length > 96) return false;
 
-  const lowered = stripped.toLowerCase();
-  if (["<eos>", "arxiv:", "[cs.", "wsj", "gnmt", "en-de", "en-fr"].some((marker) => lowered.includes(marker))) {
-    return false;
+  const lowered = collapsed.toLowerCase();
+  if (GENERIC_ALIAS_TOKENS.has(lowered)) return false;
+
+  const alpha = [...collapsed].filter((char) => /[A-Za-z]/.test(char)).length;
+  const digits = [...collapsed].filter((char) => /\d/.test(char)).length;
+  if (alpha === 0 && digits === 0) return false;
+  if (digits > alpha && alpha < 2) return false;
+
+  const words = collapsed.replaceAll("/", " ").split(" ").filter(Boolean);
+  if (words.length === 1) {
+    const word = words[0];
+    if (GENERIC_ALIAS_TOKENS.has(word.toLowerCase())) return false;
+    if (word.length <= 2 && word !== word.toUpperCase()) return false;
   }
 
-  const alpha = [...stripped].filter((char) => /[A-Za-z]/.test(char)).length;
-  const digits = [...stripped].filter((char) => /\d/.test(char)).length;
-  if (alpha < 3) return false;
-  if (digits > alpha) return false;
+  const punctuation = [...collapsed].filter(
+    (char) => !/[A-Za-z0-9\s]/.test(char)
+  ).length;
+  if (punctuation > Math.max(4, Math.floor(collapsed.length / 3))) return false;
 
   return true;
-}
-
-function parseHeadingLabel(value: string) {
-  const stripped = normalizeText(value);
-  const match = stripped.match(HEADING_PREFIX_RE);
-  if (!match) {
-    return {
-      depth: 1,
-      label: stripped,
-      prefix: null as string | null,
-    };
-  }
-
-  return {
-    depth: match[1].split(".").length,
-    label: match[2].trim(),
-    prefix: match[1],
-  };
-}
-
-function escapeRegex(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-type LinkTarget = {
-  articleId: string;
-  label: string;
-};
-
-function collectLinkRanges(content: string, targets: LinkTarget[]) {
-  const candidates: Array<{ start: number; end: number; target: LinkTarget }> = [];
-  for (const target of targets) {
-    const escaped = escapeRegex(target.label);
-    const pattern = /[A-Za-z0-9]/.test(target.label)
-      ? new RegExp(`(?<!\\w)${escaped}(?!\\w)`, "gi")
-      : new RegExp(escaped, "gi");
-    for (const match of content.matchAll(pattern)) {
-      const start = match.index;
-      if (start == null) continue;
-      candidates.push({
-        start,
-        end: start + match[0].length,
-        target,
-      });
-    }
-  }
-
-  candidates.sort((left, right) => {
-    if (left.start !== right.start) return left.start - right.start;
-    return (right.end - right.start) - (left.end - left.start);
-  });
-
-  const accepted: Array<{ start: number; end: number; target: LinkTarget }> = [];
-  let cursor = -1;
-  for (const candidate of candidates) {
-    if (candidate.start < cursor) continue;
-    accepted.push(candidate);
-    cursor = candidate.end;
-  }
-  return accepted;
 }
 
 function renderStyledText(
@@ -145,23 +113,6 @@ function renderStyledText(
   return parts;
 }
 
-function isNoiseBlock(block: ArticleBlock) {
-  const stripped = normalizeText(block.content);
-  if (!stripped) return true;
-  if (["image", "table", "quote", "code_block"].includes(block.element_type)) return false;
-  if (block.element_type === "heading") return !looksLikeRealHeading(stripped);
-
-  const lowered = stripped.toLowerCase();
-  if (lowered === "<eos>" || lowered === "eos") return true;
-  if (["arxiv:", "[cs.", "gnmt", "en-de", "en-fr", "wsj"].some((marker) => lowered.includes(marker))) {
-    return true;
-  }
-  if (/^[\W\d_]+$/.test(stripped)) return true;
-  if (!/[A-Za-z]/.test(stripped) && /\d/.test(stripped)) return true;
-
-  return false;
-}
-
 function getScrollParent(element: HTMLElement | null): HTMLElement | Window {
   if (!element) return window;
 
@@ -178,27 +129,72 @@ function getScrollParent(element: HTMLElement | null): HTMLElement | Window {
   return window;
 }
 
-function renderTable(content: string) {
-  const rows = content
+function extractTableRows(block: ArticleBlock) {
+  const rawRows = block.meta_json?.rows;
+  if (Array.isArray(rawRows)) {
+    const structuredRows = rawRows
+      .map((row) =>
+        Array.isArray(row)
+          ? row.map((cell) => String(cell ?? "").trim())
+          : []
+      )
+      .filter((row) => row.some((cell) => cell.length > 0));
+    if (structuredRows.length > 0) {
+      return structuredRows;
+    }
+  }
+
+  return block.content
     .split("\n")
     .map((row) => row.split("|").map((cell) => cell.trim()).filter(Boolean))
     .filter((row) => row.length > 0);
+}
+
+function renderTable(block: ArticleBlock) {
+  const rows = extractTableRows(block);
 
   if (rows.length === 0) {
-    return <p className="text-vault-text leading-relaxed text-[15px]">{content}</p>;
+    return <p className="text-vault-text leading-relaxed text-[15px]">{block.content}</p>;
   }
 
+  const maxColumns = Math.max(...rows.map((row) => row.length), 0);
+  const [header, ...bodyRows] = rows;
+  const hasHeader = rows.length > 1;
+
   return (
-    <div className="overflow-x-auto rounded-lg border border-vault-border bg-vault-surface">
+    <div className="overflow-x-auto rounded-xl border border-vault-border bg-vault-surface shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
       <table className="min-w-full text-sm">
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={`${rowIndex}-${row.join("-")}`} className="border-b last:border-b-0 border-vault-border">
-              {row.map((cell, cellIndex) => (
-                <td key={`${rowIndex}-${cellIndex}`} className="px-3 py-2 text-vault-text align-top">
-                  {cell}
-                </td>
+        {hasHeader && (
+          <thead className="border-b border-vault-border bg-vault-bg/70">
+            <tr>
+              {Array.from({ length: maxColumns }).map((_, cellIndex) => (
+                <th
+                  key={cellIndex}
+                  className="px-3 py-2 text-left text-[11px] font-mono uppercase tracking-[0.16em] text-vault-gold/80 align-top"
+                >
+                  {header[cellIndex] ?? ""}
+                </th>
               ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>
+          {(hasHeader ? bodyRows : rows).map((row, rowIndex) => (
+            <tr
+              key={`${rowIndex}-${row.join("-")}`}
+              className="border-b last:border-b-0 border-vault-border/80 odd:bg-white/[0.01]"
+            >
+              {Array.from({ length: maxColumns }).map((_, cellIndex) => {
+                const cell = row[cellIndex] ?? "";
+                return (
+                  <td
+                    key={`${rowIndex}-${cellIndex}`}
+                    className="px-3 py-2.5 text-vault-text align-top leading-6"
+                  >
+                    {cell}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -207,8 +203,18 @@ function renderTable(content: string) {
   );
 }
 
-function renderInlineContent(block: ArticleBlock, projectId: string, linkTargets: LinkTarget[]) {
-  const ranges = collectLinkRanges(block.content, linkTargets);
+function renderFormula(content: string) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-vault-border bg-vault-surface/80 px-4 py-3">
+      <code className="block whitespace-pre-wrap text-[1.05rem] leading-8 text-vault-text">
+        {content}
+      </code>
+    </div>
+  );
+}
+
+function renderInlineContent(block: ArticleBlock, projectId: string) {
+  const ranges = block.link_ranges ?? [];
   if (ranges.length === 0) {
     return renderStyledText(block.content, block.inline_spans);
   }
@@ -227,8 +233,8 @@ function renderInlineContent(block: ArticleBlock, projectId: string, linkTargets
 
     parts.push(
       <Link
-        key={`link-${range.target.articleId}-${range.start}`}
-        href={`/projects/${projectId}/articles/${range.target.articleId}`}
+        key={`link-${range.article_id}-${range.start}`}
+        href={`/projects/${projectId}/articles/${range.article_id}`}
         className="text-vault-gold underline decoration-vault-gold/35 underline-offset-4 hover:text-vault-text transition-colors"
       >
         {renderStyledText(
@@ -254,22 +260,19 @@ function renderInlineContent(block: ArticleBlock, projectId: string, linkTargets
 
 type HoveredCitation = {
   id: string;
-  pageNumber: number | null;
-  sectionPath: string | null;
+  sourceContextLabel: string | null;
 };
 
 function Block({
   block,
   index,
   projectId,
-  linkTargets,
   onHoverCitation,
   onLeaveCitation,
 }: {
   block: ArticleBlock;
   index: number;
   projectId: string;
-  linkTargets: LinkTarget[];
   onHoverCitation: (value: HoveredCitation | null) => void;
   onLeaveCitation: () => void;
 }) {
@@ -280,27 +283,29 @@ function Block({
   const isQuote = block.element_type === "quote";
   const isImage = block.element_type === "image";
   const isFootnote = block.element_type === "footnote";
-  const headingMeta = isHeading ? parseHeadingLabel(block.content) : null;
+  const isFormula = block.element_type === "formula";
+  const headingDepth = block.heading_depth ?? 1;
+  const headingLabel = block.heading_label ?? block.content;
 
   let body;
   if (isHeading) {
-    if ((headingMeta?.depth ?? 1) <= 1) {
+    if (headingDepth <= 1) {
       body = (
         <div className="pt-4 pb-1">
-          <div className="mb-3 h-px w-14 bg-vault-gold/55" />
+            <div className="mb-3 h-px w-14 bg-vault-gold/55" />
           <h3 className="text-display text-[2rem] md:text-[2.25rem] font-semibold text-vault-text leading-[1.02]">
-            {headingMeta?.label ?? renderInlineContent(block)}
+            {headingLabel}
           </h3>
         </div>
       );
-    } else if (headingMeta?.depth === 2) {
+    } else if (headingDepth === 2) {
       body = (
         <div className="pt-3 pb-1">
           <p className="mb-2 text-[11px] font-mono uppercase tracking-[0.26em] text-vault-gold/60">
             Section
           </p>
           <h3 className="text-display text-[1.65rem] md:text-[1.85rem] font-semibold text-vault-text leading-[1.08]">
-            {headingMeta.label}
+            {headingLabel}
           </h3>
         </div>
       );
@@ -311,7 +316,7 @@ function Block({
             Topic
           </p>
           <h3 className="text-display text-[1.2rem] md:text-[1.35rem] font-semibold text-vault-text leading-[1.15]">
-            {headingMeta?.label ?? renderInlineContent(block)}
+            {headingLabel}
           </h3>
         </div>
       );
@@ -332,19 +337,21 @@ function Block({
       </ul>
     );
   } else if (isTable) {
-    body = renderTable(block.content);
+    body = renderTable(block);
   } else if (isCaption) {
     body = (
       <p className="text-sm italic text-vault-muted leading-relaxed">
         {block.content}
       </p>
     );
+  } else if (isFormula) {
+    body = renderFormula(block.content);
   } else if (isQuote) {
     body = (
           <blockquote className="border-l-2 border-vault-gold/60 pl-4 text-vault-text italic leading-relaxed">
         <div className="flex items-start gap-2">
           <Quote size={14} className="mt-1 text-vault-gold shrink-0" />
-          <span>{renderInlineContent(block, projectId, linkTargets)}</span>
+          <span>{renderInlineContent(block, projectId)}</span>
         </div>
       </blockquote>
     );
@@ -365,13 +372,13 @@ function Block({
   } else if (isFootnote) {
     body = (
       <p className="text-sm text-vault-muted leading-relaxed border-l border-vault-border pl-3">
-        {renderInlineContent(block, projectId, linkTargets)}
+        {renderInlineContent(block, projectId)}
       </p>
     );
   } else {
     body = (
       <p className="text-vault-text leading-relaxed text-[15px]">
-        {renderInlineContent(block, projectId, linkTargets)}
+        {renderInlineContent(block, projectId)}
       </p>
     );
   }
@@ -382,13 +389,12 @@ function Block({
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.03, duration: 0.3 }}
       className="relative"
-      onMouseEnter={() =>
-        onHoverCitation({
-          id: block.id,
-          pageNumber: block.page_number,
-          sectionPath: block.section_path,
-        })
-      }
+        onMouseEnter={() =>
+          onHoverCitation({
+            id: block.id,
+            sourceContextLabel: block.source_context_label ?? null,
+          })
+        }
       onMouseLeave={onLeaveCitation}
     >
       <div className={cn(isHeading ? "py-1.5" : "py-0.5")}>
@@ -407,29 +413,16 @@ export default function ArticlePage() {
   const [aliasDraft, setAliasDraft] = useState("");
   const [aliasModalDraft, setAliasModalDraft] = useState<string[]>([]);
   const pageRef = useRef<HTMLDivElement | null>(null);
+  const articleQueryKey = ["article", projectId, articleId] as const;
 
   const { data: article, isLoading } = useQuery({
-    queryKey: ["article", articleId],
+    queryKey: articleQueryKey,
     queryFn: () => api.articles.get(projectId, articleId),
-  });
-  const { data: graph } = useQuery({
-    queryKey: ["graph", projectId],
-    queryFn: () => api.graph.get(projectId),
-  });
-
-  const { data: structuralBlocks = [] } = useQuery({
-    queryKey: ["structural-blocks", projectId],
-    queryFn: () => api.structuralBlocks.list(projectId),
   });
 
   const visibleBlocks = useMemo(
-    () => article?.blocks.filter((block) => !isNoiseBlock(block)) ?? [],
+    () => article?.blocks.filter((block) => !block.is_noise) ?? [],
     [article]
-  );
-
-  const headingBlocks = useMemo(
-    () => visibleBlocks.filter((block) => block.element_type === "heading"),
-    [visibleBlocks]
   );
 
   const displayBlockCount = useMemo(
@@ -440,24 +433,11 @@ export default function ArticlePage() {
   const titleAlias = useMemo(() => article?.aliases?.[0] ?? article?.title ?? "", [article]);
   const aliasList = useMemo(() => article?.aliases ?? (article?.title ? [article.title] : []), [article]);
   const manualAliasList = useMemo(() => aliasList.slice(1), [aliasList]);
-
-  const linkTargets = useMemo(() => {
-    const seen = new Set<string>();
-    const targets: LinkTarget[] = [];
-    for (const node of graph?.nodes ?? []) {
-      if (node.id === articleId) continue;
-      const labels = [node.title, ...(node.aliases ?? [])]
-        .map((label) => label.replace(MULTISPACE_RE, " ").trim())
-        .filter((label) => label.length >= 2);
-      for (const label of labels) {
-        const key = `${node.id}:${label.toLowerCase()}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        targets.push({ articleId: node.id, label });
-      }
-    }
-    return targets.sort((left, right) => right.label.length - left.label.length);
-  }, [articleId, graph?.nodes]);
+  const aliasDraftIsValid = useMemo(
+    () => !aliasDraft.trim() || isReasonableManualAlias(aliasDraft),
+    [aliasDraft]
+  );
+  const sourceSummary = hoveredCitation?.sourceContextLabel ?? "";
 
   const updateAliases = useMutation({
     mutationFn: (aliases: string[]) => api.articles.updateAliases(projectId, articleId, aliases),
@@ -466,67 +446,48 @@ export default function ArticlePage() {
       setAliasDraft("");
 
       await Promise.all([
-        qc.cancelQueries({ queryKey: ["article", articleId] }),
-        qc.cancelQueries({ queryKey: ["graph", projectId] }),
+        qc.cancelQueries({ queryKey: articleQueryKey }),
       ]);
 
-      const previousArticle = qc.getQueryData<Article>(["article", articleId]);
-      const previousGraph = qc.getQueryData<GraphPayload>(["graph", projectId]);
+      const previousArticle = qc.getQueryData<Article>(articleQueryKey);
       const fullAliases = titleAlias ? [titleAlias, ...nextAliases] : nextAliases;
 
       if (previousArticle) {
-        qc.setQueryData<Article>(["article", articleId], {
+        qc.setQueryData<Article>(articleQueryKey, {
           ...previousArticle,
           aliases: fullAliases,
         });
       }
 
-      if (previousGraph) {
-        qc.setQueryData<GraphPayload>(["graph", projectId], {
-          ...previousGraph,
-          nodes: previousGraph.nodes.map((node) =>
-            node.id === articleId ? { ...node, aliases: fullAliases } : node
-          ),
-        });
-      }
-
-      return { previousArticle, previousGraph };
+      return { previousArticle };
     },
     onError: (_error, _aliases, context) => {
       if (context?.previousArticle) {
-        qc.setQueryData(["article", articleId], context.previousArticle);
-      }
-      if (context?.previousGraph) {
-        qc.setQueryData(["graph", projectId], context.previousGraph);
+        qc.setQueryData(articleQueryKey, context.previousArticle);
       }
       setAliasModalDraft(context?.previousArticle?.aliases?.slice(1) ?? manualAliasList);
     },
     onSuccess: (response) => {
       setAliasModalDraft(response.aliases.slice(1));
-      qc.setQueryData<Article>(["article", articleId], (current) =>
+      qc.setQueryData<Article>(articleQueryKey, (current) =>
         current ? { ...current, aliases: response.aliases } : current
-      );
-      qc.setQueryData<GraphPayload>(["graph", projectId], (current) =>
-        current
-          ? {
-              ...current,
-              nodes: current.nodes.map((node) =>
-                node.id === articleId ? { ...node, aliases: response.aliases } : node
-              ),
-            }
-          : current
       );
     },
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["article", articleId] });
+      qc.invalidateQueries({ queryKey: articleQueryKey });
+      qc.invalidateQueries({ queryKey: ["articles", projectId] });
+      qc.invalidateQueries({ queryKey: ["articles-sidebar", projectId] });
+      qc.invalidateQueries({
+        predicate: (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey[0] === "article" &&
+          query.queryKey[1] === projectId,
+      });
       qc.invalidateQueries({ queryKey: ["graph", projectId] });
     },
   });
 
-  const tocBlocks = useMemo(
-    () => headingBlocks.filter((block) => looksLikeRealHeading(block.content)),
-    [headingBlocks]
-  );
+  const tocBlocks = useMemo(() => article?.toc ?? [], [article?.toc]);
 
   useEffect(() => {
     if (tocBlocks.length === 0) return;
@@ -538,22 +499,22 @@ export default function ArticlePage() {
       frame = 0;
       const containerTop = scrollParent instanceof Window ? 0 : scrollParent.getBoundingClientRect().top;
       const threshold = containerTop + 160;
-      let nextActiveId = tocBlocks[0]?.id ?? null;
+      let nextActiveId = tocBlocks[0]?.block_id ?? null;
       const isNearBottom =
         scrollParent instanceof Window
           ? window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 24
           : scrollParent.scrollTop + scrollParent.clientHeight >= scrollParent.scrollHeight - 24;
 
       if (isNearBottom) {
-        nextActiveId = tocBlocks[tocBlocks.length - 1]?.id ?? nextActiveId;
+        nextActiveId = tocBlocks[tocBlocks.length - 1]?.block_id ?? nextActiveId;
       } else {
         for (const block of tocBlocks) {
-          const node = document.getElementById(`block-${block.id}`);
+          const node = document.getElementById(`block-${block.block_id}`);
           if (!node) continue;
 
           const top = node.getBoundingClientRect().top;
           if (top <= threshold) {
-            nextActiveId = block.id;
+            nextActiveId = block.block_id;
           } else {
             break;
           }
@@ -588,6 +549,7 @@ export default function ArticlePage() {
   function addAliasToModal() {
     const value = aliasDraft.trim();
     if (!value) return;
+    if (!isReasonableManualAlias(value)) return;
     const exists =
       titleAlias.toLowerCase() === value.toLowerCase() ||
       aliasModalDraft.some((alias) => alias.toLowerCase() === value.toLowerCase());
@@ -614,23 +576,6 @@ export default function ArticlePage() {
 
   if (!article) return null;
 
-  const flatBlocks: StructuralBlock[] = [];
-  const walk = (items: StructuralBlock[]) => {
-    for (const item of items) {
-      flatBlocks.push(item);
-      walk(item.children);
-    }
-  };
-  walk(structuralBlocks);
-
-  const blockById = new Map(flatBlocks.map((block) => [block.id, block]));
-  const breadcrumb: StructuralBlock[] = [];
-  let cursor = article.structural_block_id ? blockById.get(article.structural_block_id) : undefined;
-  while (cursor) {
-    breadcrumb.unshift(cursor);
-    cursor = cursor.parent_id ? blockById.get(cursor.parent_id) : undefined;
-  }
-
   return (
     <div ref={pageRef} className="max-w-7xl mx-auto px-8 py-12 grid gap-10 lg:grid-cols-[minmax(0,1fr)_280px]">
       {/* Header */}
@@ -640,9 +585,9 @@ export default function ArticlePage() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-10"
         >
-          {breadcrumb.length > 0 && (
+          {(article.breadcrumb?.length ?? 0) > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono uppercase tracking-widest text-vault-muted mb-3">
-              {breadcrumb.map((item, index) => (
+              {article.breadcrumb?.map((item, index) => (
                 <span key={item.id} className="inline-flex items-center gap-2">
                   {index > 0 && <span className="text-vault-border">/</span>}
                   <Link href={`/projects/${projectId}/graph`} className="hover:text-vault-gold transition-colors">
@@ -695,7 +640,6 @@ export default function ArticlePage() {
                 block={block}
                 index={i}
                 projectId={projectId}
-                linkTargets={linkTargets}
                 onHoverCitation={setHoveredCitation}
                 onLeaveCitation={() => setHoveredCitation((current) => (current?.id === block.id ? null : current))}
               />
@@ -712,37 +656,39 @@ export default function ArticlePage() {
                 <p className="text-xs font-mono uppercase tracking-widest text-vault-gold mb-3">
                   On this page
                 </p>
-                <div className="space-y-2">
-                  {tocBlocks.map((block) => (
-                    (() => {
-                      const headingMeta = parseHeadingLabel(block.content);
-                      return (
-                  <a
-                    key={block.id}
-                    href={`#block-${block.id}`}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      setActiveHeadingId(block.id);
-                      document.getElementById(`block-${block.id}`)?.scrollIntoView({
-                        behavior: "smooth",
-                        block: "start",
-                      });
-                    }}
-                    className={cn(
-                      "block text-sm transition-colors",
-                      headingMeta.depth === 1 && "font-semibold",
-                      headingMeta.depth === 2 && "pl-2 font-medium",
-                      headingMeta.depth >= 3 && "pl-5 text-[13px]",
-                      activeHeadingId === block.id
-                        ? "text-vault-gold"
-                        : "text-vault-muted hover:text-vault-text"
-                    )}
-                  >
-                    {headingMeta.label}
-                  </a>
-                      );
-                    })()
-                  ))}
+                <div className="space-y-1.5">
+              {tocBlocks.map((block) => {
+                    return (
+                      <a
+                        key={block.block_id}
+                        href={`#block-${block.block_id}`}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setActiveHeadingId(block.block_id);
+                          document.getElementById(`block-${block.block_id}`)?.scrollIntoView({
+                            behavior: "smooth",
+                            block: "start",
+                          });
+                        }}
+                        className={cn(
+                          "block rounded-md px-2 py-1.5 text-sm transition-colors",
+                          block.level === 1 && "font-semibold",
+                          block.level === 2 && "pl-4 font-medium",
+                          block.level >= 3 && "pl-7 text-[13px]",
+                          activeHeadingId === block.block_id
+                            ? "bg-vault-gold/10 text-vault-gold"
+                            : "text-vault-muted hover:bg-vault-bg hover:text-vault-text"
+                        )}
+                      >
+                        <span className="flex items-start gap-2">
+                          {block.level > 1 && (
+                            <span className="mt-[7px] h-px w-2 shrink-0 bg-vault-border" />
+                          )}
+                          <span>{block.label}</span>
+                        </span>
+                      </a>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -750,6 +696,26 @@ export default function ArticlePage() {
               <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold/70">
                 Links
               </p>
+              <div className="flex flex-wrap gap-2">
+                {aliasList.slice(0, 4).map((alias, index) => (
+                  <span
+                    key={`${alias}-${index}`}
+                    className={cn(
+                      "inline-flex rounded-full border px-2 py-1 text-[11px] leading-none",
+                      index === 0
+                        ? "border-vault-gold/30 bg-vault-gold/10 text-vault-gold"
+                        : "border-vault-border text-vault-muted"
+                    )}
+                  >
+                    {alias}
+                  </span>
+                ))}
+                {aliasList.length > 4 && (
+                  <span className="inline-flex rounded-full border border-vault-border px-2 py-1 text-[11px] leading-none text-vault-muted">
+                    +{aliasList.length - 4} more
+                  </span>
+                )}
+              </div>
               <button
                 onClick={() => {
                   setAliasModalDraft(manualAliasList);
@@ -768,24 +734,21 @@ export default function ArticlePage() {
         </aside>
       )}
 
-      {hoveredCitation && (
-        <div className="hidden lg:block pointer-events-none fixed bottom-6 right-8 z-20 max-w-[360px]">
-          <div className="space-y-1.5 text-xs font-mono text-vault-muted/90 leading-5 transition-all duration-200">
-            {hoveredCitation.pageNumber && (
-              <p className="flex items-center gap-2">
-                <FileText size={11} className="shrink-0 text-vault-gold/70" />
-                <span>p.{hoveredCitation.pageNumber}</span>
-              </p>
-            )}
-            {hoveredCitation.sectionPath && (
-              <p className="flex items-start gap-2">
-                <MapPin size={11} className="mt-0.5 shrink-0 text-vault-gold/70" />
-                <span>{hoveredCitation.sectionPath}</span>
-              </p>
-            )}
-          </div>
-        </div>
-      )}
+      <div className="pointer-events-none fixed bottom-6 right-6 z-20 hidden w-[320px] lg:block">
+        <motion.div
+          key={sourceSummary || "empty-source"}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.16, ease: "easeOut" }}
+          className="pointer-events-none px-1 py-1"
+        >
+          {sourceSummary ? (
+            <p className="text-xs font-mono leading-6 text-vault-muted/85 text-right">
+              {sourceSummary}
+            </p>
+          ) : null}
+        </motion.div>
+      </div>
 
       {aliasModalOpen && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/55 px-6">
@@ -843,19 +806,27 @@ export default function ArticlePage() {
                     }
                   }}
                   placeholder="Add alias"
-                  className="w-full rounded-md border border-vault-border bg-vault-bg px-3 py-2 text-sm text-vault-text outline-none placeholder:text-vault-muted"
+                  className={cn(
+                    "w-full rounded-md border bg-vault-bg px-3 py-2 text-sm text-vault-text outline-none placeholder:text-vault-muted",
+                    aliasDraftIsValid ? "border-vault-border" : "border-vault-error/60"
+                  )}
                 />
                 <button
                   onClick={addAliasToModal}
-                  disabled={!aliasDraft.trim() || updateAliases.isPending}
+                  disabled={!aliasDraft.trim() || !aliasDraftIsValid || updateAliases.isPending}
                   className="rounded-md bg-vault-gold px-4 py-2 text-sm font-medium text-vault-bg disabled:opacity-50"
                 >
                   {updateAliases.isPending ? "Saving..." : "Add"}
                 </button>
               </div>
+              {!aliasDraftIsValid && aliasDraft.trim() && (
+                <p className="text-xs leading-5 text-vault-error">
+                  Use a precise synonym or abbreviation, not a generic label or noisy token.
+                </p>
+              )}
 
               <p className="pt-2 text-xs leading-5 text-vault-muted">
-                The first alias is the article title and stays fixed. Everything else can be removed and controls inline article hyperlinks.
+                The first alias is the article title and stays fixed. Add only precise names, abbreviations, or synonyms you would actually want to turn into inline links.
               </p>
             </div>
           </div>

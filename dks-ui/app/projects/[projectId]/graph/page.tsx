@@ -18,12 +18,115 @@ import "@xyflow/react/dist/style.css";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import type { StructuralBlock } from "@/lib/types";
 
 type TopicNodeData = {
   label: string;
   section: string;
   kind: "article" | "node";
 };
+
+function StructuralBlockTree({
+  block,
+  depth = 0,
+  articleCount,
+  activeBlockId,
+  onSelect,
+  onBeginRename,
+  onBeginCreateChild,
+  onDelete,
+}: {
+  block: StructuralBlock;
+  depth?: number;
+  articleCount: number;
+  activeBlockId: string | null;
+  onSelect: (blockId: string | null) => void;
+  onBeginRename: (block: StructuralBlock) => void;
+  onBeginCreateChild: (block: StructuralBlock) => void;
+  onDelete: (blockId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(depth < 1);
+  const hasChildren = block.children.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <div
+        className={cn(
+          "rounded-xl border px-3 py-3 transition-colors",
+          activeBlockId === block.id
+            ? "border-vault-gold/40 bg-vault-gold/10"
+            : "border-vault-border bg-vault-bg"
+        )}
+        style={{ marginLeft: Math.min(depth * 14, 28) }}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => onSelect(activeBlockId === block.id ? null : block.id)}
+            className="min-w-0 text-left"
+          >
+            <p className="text-sm text-vault-text">{block.name}</p>
+            <p className="mt-1 text-xs text-vault-muted leading-5">
+              {articleCount} article{articleCount !== 1 ? "s" : ""}
+              {block.description ? ` • ${block.description}` : ""}
+            </p>
+          </button>
+          <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em]">
+            <button
+              onClick={() => onBeginCreateChild(block)}
+              className="text-vault-muted hover:text-vault-gold transition-colors"
+            >
+              Child
+            </button>
+            <button
+              onClick={() => onBeginRename(block)}
+              className="text-vault-muted hover:text-vault-gold transition-colors"
+            >
+              Rename
+            </button>
+            <button
+              onClick={() => onDelete(block.id)}
+              className="text-vault-muted hover:text-vault-error transition-colors"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+        {hasChildren && (
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="mt-3 text-[11px] font-mono uppercase tracking-[0.18em] text-vault-muted hover:text-vault-text"
+          >
+            {expanded ? "Hide" : `Children (${block.children.length})`}
+          </button>
+        )}
+      </div>
+      {expanded &&
+        block.children.map((child) => (
+          <StructuralBlockTree
+            key={child.id}
+            block={child}
+            depth={depth + 1}
+            articleCount={articleCount}
+            activeBlockId={activeBlockId}
+            onSelect={onSelect}
+            onBeginRename={onBeginRename}
+            onBeginCreateChild={onBeginCreateChild}
+            onDelete={onDelete}
+          />
+        ))}
+    </div>
+  );
+}
+
+function countArticlesInBranch(block: StructuralBlock, counts: Map<string, number>): number {
+  return (counts.get(block.id) ?? 0) + block.children.reduce(
+    (acc, child) => acc + countArticlesInBranch(child, counts),
+    0
+  );
+}
 
 function TopicNode({ data }: NodeProps<Node<TopicNodeData>>) {
   return (
@@ -60,9 +163,11 @@ export default function GraphPage() {
   const qc = useQueryClient();
   const layoutStorageKey = `dks:graph-layout:${projectId}`;
   const [newBlock, setNewBlock] = useState("");
+  const [newBlockParentId, setNewBlockParentId] = useState<string | null>(null);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
   const [query, setQuery] = useState("");
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<TopicNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [layoutVersion, setLayoutVersion] = useState("");
@@ -80,10 +185,24 @@ export default function GraphPage() {
     queryFn: () => api.structuralBlocks.list(projectId),
   });
 
+  const articleCountByBlock = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const article of articles) {
+      if (!article.structural_block_id) continue;
+      counts.set(article.structural_block_id, (counts.get(article.structural_block_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [articles]);
+
   const createBlock = useMutation({
-    mutationFn: () => api.structuralBlocks.create(projectId, { name: newBlock }),
+    mutationFn: () =>
+      api.structuralBlocks.create(projectId, {
+        name: newBlock,
+        parent_id: newBlockParentId,
+      }),
     onSuccess: () => {
       setNewBlock("");
+      setNewBlockParentId(null);
       qc.invalidateQueries({ queryKey: ["structural-blocks", projectId] });
       qc.invalidateQueries({ queryKey: ["articles", projectId] });
       qc.invalidateQueries({ queryKey: ["graph", projectId] });
@@ -134,11 +253,35 @@ export default function GraphPage() {
     const palette = ["#D4A853", "#6B9FD4", "#8BB56B", "#C47DC7", "#D47B6B"];
     let ci = 0;
 
+    const blockIdsToInclude = new Set<string>();
+    const collectBlockIds = (items: StructuralBlock[]) => {
+      for (const item of items) {
+        if (item.id === selectedBlockId) {
+          blockIdsToInclude.add(item.id);
+          const walk = (node: StructuralBlock) => {
+            for (const child of node.children) {
+              blockIdsToInclude.add(child.id);
+              walk(child);
+            }
+          };
+          walk(item);
+        } else {
+          collectBlockIds(item.children);
+        }
+      }
+    };
+    if (selectedBlockId) {
+      collectBlockIds(structuralBlocks);
+    }
+
     const filteredArticles = articles.filter((article) => {
       const matchesQuery =
         !query.trim() ||
         article.title.toLowerCase().includes(query.trim().toLowerCase());
-      return matchesQuery;
+      const matchesBlock =
+        !selectedBlockId ||
+        (article.structural_block_id ? blockIdsToInclude.has(article.structural_block_id) : false);
+      return matchesQuery && matchesBlock;
     });
 
     const bySection = new Map<string, typeof filteredArticles>();
@@ -187,7 +330,7 @@ export default function GraphPage() {
       }));
 
     return { nodes: nextNodes, edges: nextEdges };
-  }, [articles, graph?.edges, query, structuralBlocks]);
+  }, [articles, graph?.edges, query, selectedBlockId, structuralBlocks]);
 
   const nextLayoutVersion = useMemo(
     () =>
@@ -273,7 +416,7 @@ export default function GraphPage() {
           <Input
             value={newBlock}
             onChange={(e) => setNewBlock(e.target.value)}
-            placeholder="New block"
+            placeholder={newBlockParentId ? "Child structural block" : "Structural block name"}
             className="bg-vault-bg border-vault-border text-vault-text"
           />
           <Button
@@ -285,10 +428,22 @@ export default function GraphPage() {
           </Button>
         </div>
         <div className="space-y-2">
+          {newBlockParentId && (
+            <div className="rounded-lg border border-vault-gold/30 bg-vault-gold/10 px-3 py-2 text-xs text-vault-gold">
+              New block will be added inside the selected block.
+              <button
+                type="button"
+                onClick={() => setNewBlockParentId(null)}
+                className="ml-2 underline underline-offset-4"
+              >
+                Clear
+              </button>
+            </div>
+          )}
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search articles"
+            placeholder="Search"
             className="bg-vault-bg border-vault-border text-vault-text"
           />
           <Button
@@ -299,60 +454,68 @@ export default function GraphPage() {
           >
             Reset layout
           </Button>
-          <p className="text-xs text-vault-muted leading-5">
-            The graph shows only explicit article-to-article references.
-          </p>
-          {structuralBlocks.map((block) => (
-            <div key={block.id} className="rounded-lg border border-vault-border bg-vault-bg px-3 py-2">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm text-vault-text">{block.name}</p>
-                  {editingBlockId === block.id ? (
-                    <div className="flex items-center gap-2 mt-2">
-                      <Input
-                        value={editingName}
-                        onChange={(e) => setEditingName(e.target.value)}
-                        className="h-8 bg-vault-surface border-vault-border text-vault-text"
-                      />
-                      <Button
-                        onClick={() => renameBlock.mutate({ blockId: block.id, name: editingName })}
-                        disabled={!editingName.trim() || renameBlock.isPending}
-                        className="h-8 bg-vault-gold text-vault-bg hover:bg-vault-gold/90"
-                      >
-                        Save
-                      </Button>
-                    </div>
-                  ) : null}
-                  {block.children.length > 0 && (
-                    <p className="text-xs text-vault-muted mt-1">
-                      {block.children.map((child) => child.name).join(", ")}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      setEditingBlockId(block.id);
-                      setEditingName(block.name);
-                    }}
-                    className="text-xs font-mono text-vault-muted hover:text-vault-gold transition-colors"
-                  >
-                    Rename
-                  </button>
-                  <button
-                    onClick={() => removeBlock.mutate(block.id)}
-                    className="text-xs font-mono text-vault-muted hover:text-vault-error transition-colors"
-                  >
-                    Delete
-                  </button>
-                </div>
+          {editingBlockId && (
+            <div className="rounded-xl border border-vault-border bg-vault-bg px-3 py-3">
+              <p className="mb-2 text-[11px] font-mono uppercase tracking-[0.18em] text-vault-gold/70">
+                Rename block
+              </p>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={editingName}
+                  onChange={(e) => setEditingName(e.target.value)}
+                  className="h-9 bg-vault-surface border-vault-border text-vault-text"
+                />
+                <Button
+                  onClick={() => renameBlock.mutate({ blockId: editingBlockId, name: editingName })}
+                  disabled={!editingName.trim() || renameBlock.isPending}
+                  className="h-9 bg-vault-gold text-vault-bg hover:bg-vault-gold/90"
+                >
+                  Save
+                </Button>
               </div>
             </div>
-          ))}
+          )}
+          {structuralBlocks.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-vault-border bg-vault-bg px-4 py-5 text-sm leading-6 text-vault-muted">
+              No blocks yet.
+            </div>
+          ) : (
+            structuralBlocks.map((block) => (
+              <StructuralBlockTree
+                key={block.id}
+                block={block}
+                articleCount={countArticlesInBranch(block, articleCountByBlock)}
+                activeBlockId={selectedBlockId}
+                onSelect={setSelectedBlockId}
+                onBeginRename={(value) => {
+                  setEditingBlockId(value.id);
+                  setEditingName(value.name);
+                }}
+                onBeginCreateChild={(value) => {
+                  setNewBlockParentId(value.id);
+                }}
+                onDelete={(blockId) => removeBlock.mutate(blockId)}
+              />
+            ))
+          )}
         </div>
       </aside>
 
       <div style={{ width: "100%", height: "100%" }}>
+        {graphLayout.nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-y-0 right-0 left-[300px] z-10 flex items-center justify-center">
+            <div className="rounded-2xl border border-vault-border bg-vault-surface/90 px-6 py-5 text-center backdrop-blur">
+              <p className="text-[11px] font-mono uppercase tracking-[0.22em] text-vault-gold/70">
+                Graph
+              </p>
+              <p className="mt-3 max-w-sm text-sm leading-6 text-vault-muted">
+                {selectedBlockId
+                  ? "No articles in this block."
+                  : "No articles match the current search."}
+              </p>
+            </div>
+          </div>
+        )}
         <ReactFlow
           className="graph-flow"
           nodes={nodes}

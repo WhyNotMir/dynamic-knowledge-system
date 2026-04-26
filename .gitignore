@@ -40,8 +40,15 @@ node_modules/
 .next/
 out/
 build/
+.vscode/
 
 coverage/
+*.coverage
+*.db
+*.sqlite
+*.sqlite3
+*.log
+dist/
 
 # -----------------------
 # Logs

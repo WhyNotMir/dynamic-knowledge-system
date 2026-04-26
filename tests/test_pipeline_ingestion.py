@@ -12,7 +12,7 @@ from app.models.source import Source, SourceStatus, SourceType
 from app.models.source_fragment import SourceFragment
 from app.repositories.source_repository import SourceRepository
 
-from tests.helpers import make_docx, make_rich_docx, unique_docx
+from tests.helpers import make_docx, make_pdf, make_rich_docx, make_table_pdf, unique_docx, unique_pdf
 
 
 async def test_run_ingestion_produces_fragments(
@@ -144,3 +144,84 @@ async def test_run_ingestion_preserves_rich_source_metadata(
 
     footnote = next((f for f in frags if f.element_type.value == "footnote"), None)
     assert footnote is not None
+
+
+async def test_run_ingestion_preserves_pdf_raw_metadata(
+    client, project, session_factory, tmp_path
+):
+    pdf = make_pdf(unique_pdf(tmp_path))
+    with pdf.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (pdf.name, fh, "application/pdf")},
+        )
+    source_id = uuid.UUID(up.json()["id"])
+
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+
+    async with session_factory() as db:
+        src = await SourceRepository(db).get(source_id)
+        assert src is not None
+        assert src.status == SourceStatus.DONE
+        assert src.source_type == SourceType.PDF
+
+        frags = (
+            await db.execute(
+                select(SourceFragment)
+                .where(SourceFragment.source_id == source_id)
+                .order_by(SourceFragment.position_index)
+            )
+        ).scalars().all()
+
+    assert len(frags) >= 2
+
+    heading = next((f for f in frags if f.element_type.value == "heading"), None)
+    paragraph = next((f for f in frags if f.element_type.value == "paragraph"), None)
+
+    assert heading is not None
+    assert paragraph is not None
+    assert heading.meta_json is not None
+    assert paragraph.meta_json is not None
+
+    heading_pdf = heading.meta_json["pdf"]
+    paragraph_pdf = paragraph.meta_json["pdf"]
+
+    assert heading_pdf["page"]["number"] == 1
+    assert heading_pdf["bbox"]["x0"] >= 0
+    assert heading_pdf["bbox"]["y0"] >= 0
+    assert heading_pdf["layout"]["line_count"] >= 1
+    assert heading_pdf["font"]["avg_size"] > paragraph_pdf["font"]["avg_size"]
+    assert paragraph_pdf["font"]["dominant_name"] is not None
+    assert paragraph_pdf["page"]["width"] > 0
+    assert paragraph_pdf["page"]["height"] > 0
+
+
+async def test_run_ingestion_preserves_pdf_tables(
+    client, project, session_factory, tmp_path
+):
+    pdf = make_table_pdf(unique_pdf(tmp_path))
+    with pdf.open("rb") as fh:
+        up = await client.post(
+            f"/projects/{project['id']}/sources",
+            files={"file": (pdf.name, fh, "application/pdf")},
+        )
+    source_id = uuid.UUID(up.json()["id"])
+
+    async with session_factory() as db:
+        await run_ingestion(source_id, db)
+
+    async with session_factory() as db:
+        frags = (
+            await db.execute(
+                select(SourceFragment)
+                .where(SourceFragment.source_id == source_id)
+                .order_by(SourceFragment.position_index)
+            )
+        ).scalars().all()
+
+    table = next((f for f in frags if f.element_type.value == "table"), None)
+    assert table is not None
+    assert table.meta_json is not None
+    assert table.meta_json["rows"][0] == ["Model", "BLEU"]
+    assert table.meta_json["rows"][1] == ["Transformer", "28.4"]

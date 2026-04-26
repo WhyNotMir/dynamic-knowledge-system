@@ -17,13 +17,8 @@
       "fragment_count": 1
     }
   ],
-  "article_count": 3,
+  "article_count": 2,
   "articles": [
-    {
-      "title": "Generated Article 3",
-      "slug": "generated-article-3",
-      "block_count": 2
-    },
     {
       "title": "Introduction",
       "slug": "introduction",

@@ -123,6 +123,8 @@ export interface InboxItem {
 export interface ArticleBlock {
   id: string;
   fragment_id: string | null;
+  source_title?: string | null;
+  source_context_label?: string | null;
   content: string;
   element_type: ElementType;
   position_index: number;
@@ -134,6 +136,11 @@ export interface ArticleBlock {
   inline_spans?: Array<{ start: number; end: number; style: string; data?: unknown }> | null;
   meta_json?: Record<string, unknown> | null;
   synthesized?: boolean;
+  heading_depth?: number | null;
+  heading_label?: string | null;
+  heading_prefix?: string | null;
+  is_noise?: boolean;
+  link_ranges?: ArticleInlineLink[];
 }
 
 export interface Article {
@@ -153,7 +160,29 @@ export interface Article {
   related_articles?: ArticleLinkSummary[];
   revision_count?: number;
   blocks: ArticleBlock[];
+  toc?: ArticleTocItem[];
+  breadcrumb?: ArticleBreadcrumbItem[];
   created_at: string;
+}
+
+export interface ArticleTocItem {
+  id: string;
+  block_id: string;
+  label: string;
+  level: number;
+  prefix?: string | null;
+}
+
+export interface ArticleInlineLink {
+  start: number;
+  end: number;
+  article_id: string;
+  label: string;
+}
+
+export interface ArticleBreadcrumbItem {
+  id: string;
+  name: string;
 }
 
 export interface ArticleLinkSummary {
@@ -179,6 +208,24 @@ export interface ArticleListItem {
   description?: string | null;
   block_count: number;
   created_at: string;
+}
+
+export interface ArticleSidebarGroup {
+  key: string;
+  label: string;
+  kind: string;
+  block_id?: string | null;
+  total_count: number;
+  articles: Array<{
+    id: string;
+    title: string;
+    slug: string;
+    kind?: ArticleKind;
+    suggested_section?: string | null;
+    status: ArticleStatus;
+    block_count: number;
+  }>;
+  groups: ArticleSidebarGroup[];
 }
 
 export interface StructuralBlock {

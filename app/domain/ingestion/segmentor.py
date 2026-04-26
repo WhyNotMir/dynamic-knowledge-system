@@ -40,6 +40,31 @@ def _merge_inline_spans(
     return merged or None
 
 
+def _is_pdf_raw_meta(meta_json: dict | None) -> bool:
+    if not meta_json:
+        return True
+    return set(meta_json.keys()) <= {"pdf", "pdf_blocks"}
+
+
+def _collect_pdf_blocks(meta_json: dict | None) -> list[dict]:
+    if not meta_json:
+        return []
+    if isinstance(meta_json.get("pdf_blocks"), list):
+        return [dict(item) for item in meta_json["pdf_blocks"]]
+    if isinstance(meta_json.get("pdf"), dict):
+        return [dict(meta_json["pdf"])]
+    return []
+
+
+def _merge_meta_json(left: dict | None, right: dict | None) -> dict | None:
+    if not left and not right:
+        return None
+    if _is_pdf_raw_meta(left) and _is_pdf_raw_meta(right):
+        blocks = _collect_pdf_blocks(left) + _collect_pdf_blocks(right)
+        return {"pdf_blocks": blocks} if blocks else None
+    return None
+
+
 def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
     """
     Rules:
@@ -114,8 +139,8 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
                 or len(el.content) < MIN_CHARS
             )
             and len(fragments[-1].content) + len(el.content) < MAX_MERGE
-            and not fragments[-1].meta_json
-            and not el.meta_json
+            and _is_pdf_raw_meta(fragments[-1].meta_json)
+            and _is_pdf_raw_meta(el.meta_json)
         ):
             prev = fragments[-1]
             fragments[-1] = FragmentData(
@@ -133,7 +158,7 @@ def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
                     el.inline_spans,
                     separator_len=1,
                 ),
-                meta_json=None,
+                meta_json=_merge_meta_json(prev.meta_json, el.meta_json),
             )
         else:
             fragments.append(FragmentData(

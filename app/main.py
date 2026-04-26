@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.base import configure_langsmith
+from app.agents.graph.checkpointer import ensure_langgraph_checkpoint_schema
 from app.api.articles import router as articles_router
 from app.api.graph import router as graph_router
 from app.api.inbox import router as inbox_router
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Global LangSmith tracing bootstrap (Phase 0 Slice B). No-op unless
     # LANGSMITH_TRACING=true in the environment.
     configure_langsmith()
+    await ensure_langgraph_checkpoint_schema()
 
     app.state.arq_pool = await create_pool(
         RedisSettings.from_dsn(settings.redis_url)

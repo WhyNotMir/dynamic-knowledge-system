@@ -13,6 +13,7 @@ import uuid
 import base64
 from pathlib import Path
 
+import fitz
 from docx import Document
 from docx.shared import Pt
 
@@ -187,8 +188,174 @@ def make_linked_docx(path: Path) -> Path:
     return path
 
 
+def make_pdf(path: Path) -> Path:
+    """Write a tiny PDF with one obvious heading and one body paragraph."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 90), "PDF Introduction", fontsize=22, fontname="helv")
+    page.insert_textbox(
+        fitz.Rect(72, 120, 520, 220),
+        (
+            "This PDF paragraph exists to exercise raw extraction metadata, "
+            "including bounding boxes, page dimensions, and font statistics. "
+            "It is intentionally long enough to wrap across several lines so "
+            "that the body font size becomes the dominant baseline for the page."
+        ),
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_two_column_pdf(path: Path) -> Path:
+    """Write a PDF with a full-width heading and two body columns."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Two Column Title", fontsize=22, fontname="helv")
+    page.insert_textbox(
+        fitz.Rect(72, 120, 260, 260),
+        (
+            "Left column paragraph one. "
+            "It should be read before the right column content. "
+            "The ordering here matters for reconstruction."
+        ),
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+    page.insert_textbox(
+        fitz.Rect(320, 120, 520, 260),
+        (
+            "Right column paragraph two. "
+            "It should appear after the left column paragraph when extracted."
+        ),
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_repeated_header_footer_pdf(path: Path) -> Path:
+    """Write a two-page PDF with repeated header/footer artifacts."""
+    doc = fitz.open()
+    for index in range(2):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 32), "Conference Header", fontsize=10, fontname="helv")
+        page.insert_text((72, 800), f"Page {index + 1}", fontsize=10, fontname="helv")
+        page.insert_text((72, 110), f"Body Section {index + 1}", fontsize=20, fontname="helv")
+        page.insert_textbox(
+            fitz.Rect(72, 150, 520, 280),
+            (
+                f"This is the main body content for page {index + 1}. "
+                "The repeated header and footer should not survive extraction."
+            ),
+            fontsize=12,
+            fontname="Times-Roman",
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_hyphenated_pdf(path: Path) -> Path:
+    """Write a PDF where one paragraph is split with a hyphen across lines."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Methods", fontsize=20, fontname="helv")
+    page.insert_text((72, 130), "The archi-", fontsize=12, fontname="Times-Roman")
+    page.insert_text((72, 146), "tecture is designed for reliable extraction.", fontsize=12, fontname="Times-Roman")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_front_matter_pdf(path: Path) -> Path:
+    """Write a PDF with author metadata before the real body starts."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 60), "Attention Is All You Need", fontsize=22, fontname="helv")
+    page.insert_text((72, 96), "ashish@example.com", fontsize=11, fontname="Times-Roman")
+    page.insert_text((72, 112), "Google Research", fontsize=11, fontname="Times-Roman")
+    page.insert_text((72, 128), "University of Somewhere", fontsize=11, fontname="Times-Roman")
+    page.insert_text((72, 174), "Abstract", fontsize=18, fontname="helv")
+    page.insert_textbox(
+        fitz.Rect(72, 210, 520, 320),
+        (
+            "This paper describes a transformer model architecture and keeps "
+            "the useful abstract content while removing front matter noise."
+        ),
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_table_pdf(path: Path) -> Path:
+    """Write a PDF with a simple ruled 2x2 table detectable by PyMuPDF."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Results", fontsize=20, fontname="helv")
+
+    x0, y0 = 72, 130
+    col_widths = [160, 160]
+    row_heights = [32, 32]
+    total_width = sum(col_widths)
+    total_height = sum(row_heights)
+
+    # Outer border.
+    page.draw_rect(fitz.Rect(x0, y0, x0 + total_width, y0 + total_height), color=(0, 0, 0), width=1)
+    # Vertical split.
+    page.draw_line(
+        fitz.Point(x0 + col_widths[0], y0),
+        fitz.Point(x0 + col_widths[0], y0 + total_height),
+        color=(0, 0, 0),
+        width=1,
+    )
+    # Horizontal split.
+    page.draw_line(
+        fitz.Point(x0, y0 + row_heights[0]),
+        fitz.Point(x0 + total_width, y0 + row_heights[0]),
+        color=(0, 0, 0),
+        width=1,
+    )
+
+    page.insert_text((x0 + 12, y0 + 20), "Model", fontsize=11, fontname="helv")
+    page.insert_text((x0 + col_widths[0] + 12, y0 + 20), "BLEU", fontsize=11, fontname="helv")
+    page.insert_text((x0 + 12, y0 + row_heights[0] + 20), "Transformer", fontsize=11, fontname="helv")
+    page.insert_text((x0 + col_widths[0] + 12, y0 + row_heights[0] + 20), "28.4", fontsize=11, fontname="helv")
+
+    page.insert_textbox(
+        fitz.Rect(72, 240, 520, 320),
+        (
+            "The evaluation table summarizes the strongest baseline and the "
+            "transformer result without duplicating every table cell as prose."
+        ),
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
 def unique_docx(tmp_dir: Path) -> Path:
     return tmp_dir / f"{uuid.uuid4().hex}.docx"
+
+
+def unique_pdf(tmp_dir: Path) -> Path:
+    return tmp_dir / f"{uuid.uuid4().hex}.pdf"
 
 
 async def confirm_all_candidates(client, project_id: str, proposal_id: str) -> dict:

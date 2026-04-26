@@ -18,6 +18,10 @@ class BuildArticlesResponse(BaseModel):
     count: int
 
 
+class DeleteAllArticlesResponse(BaseModel):
+    deleted_count: int
+
+
 class ArticleAliasesUpdate(BaseModel):
     aliases: list[str]
 
@@ -30,6 +34,8 @@ class ArticleAliasesResponse(BaseModel):
 class ArticleBlockSchema(BaseModel):
     id: uuid.UUID
     fragment_id: uuid.UUID | None
+    source_title: str | None = None
+    source_context_label: str | None = None
     content: str
     element_type: ElementType
     position_index: int
@@ -43,6 +49,11 @@ class ArticleBlockSchema(BaseModel):
     inline_spans: list | None = None
     meta_json: dict | None = None
     synthesized: bool = False
+    heading_depth: int | None = None
+    heading_label: str | None = None
+    heading_prefix: str | None = None
+    is_noise: bool = False
+    link_ranges: list["ArticleInlineLink"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -74,6 +85,46 @@ class ArticleLinkSummary(BaseModel):
     source_block_id: uuid.UUID | None = None
 
 
+class ArticleTocItem(BaseModel):
+    id: str
+    block_id: uuid.UUID
+    label: str
+    level: int
+    prefix: str | None = None
+
+
+class ArticleInlineLink(BaseModel):
+    start: int
+    end: int
+    article_id: uuid.UUID
+    label: str
+
+
+class SidebarArticleItem(BaseModel):
+    id: uuid.UUID
+    title: str
+    slug: str
+    kind: ArticleKind = ArticleKind.ARTICLE
+    suggested_section: str | None = None
+    status: ArticleStatus
+    block_count: int
+
+
+class ArticleSidebarGroup(BaseModel):
+    key: str
+    label: str
+    kind: str
+    block_id: uuid.UUID | None = None
+    total_count: int
+    articles: list[SidebarArticleItem] = Field(default_factory=list)
+    groups: list["ArticleSidebarGroup"] = Field(default_factory=list)
+
+
+class ArticleBreadcrumbItem(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
 class ArticleDetail(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -91,6 +142,12 @@ class ArticleDetail(BaseModel):
     related_articles: list[ArticleLinkSummary] = Field(default_factory=list)
     revision_count: int = 0
     blocks: list[ArticleBlockSchema]
+    toc: list[ArticleTocItem] = Field(default_factory=list)
+    breadcrumb: list[ArticleBreadcrumbItem] = Field(default_factory=list)
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+ArticleBlockSchema.model_rebuild()
+ArticleSidebarGroup.model_rebuild()

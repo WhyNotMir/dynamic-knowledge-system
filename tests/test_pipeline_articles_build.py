@@ -17,16 +17,20 @@ produces the shape the UI expects:
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from app.domain.articles.article_builder import _looks_like_noise_text
+from app.agents.chains.title_agent import _fallback_description
+from app.domain.articles.article_builder import _is_meaningful_body_fragment, _looks_like_noise_text
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.alias import Alias
 from app.models.article import Article, ArticleBlock
 from app.models.article_candidate import (
     ArticleCandidate,
+    ArticleCandidateFragment,
     ProposalStatus,
     StructureProposal,
 )
@@ -46,6 +50,25 @@ def test_builder_noise_filter_identifies_pdf_artifacts():
     assert _looks_like_noise_text("<EOS>")
     assert _looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
     assert not _looks_like_noise_text("The transformer uses multi-head attention in three different ways.")
+
+
+def test_fallback_description_uses_more_than_opening_line():
+    fragments = [
+        SimpleNamespace(
+            element_type=SimpleNamespace(value="paragraph"),
+            content="The transformer uses multi-head attention in three different ways.",
+        ),
+        SimpleNamespace(
+            element_type=SimpleNamespace(value="paragraph"),
+            content="The encoder contains self-attention layers, while the decoder combines masked self-attention with encoder-decoder attention.",
+        ),
+    ]
+
+    description = _fallback_description(fragments)
+
+    assert description is not None
+    assert description.startswith("This article discusses")
+    assert "three different ways" in description or "Transformer" in description
 
 
 async def _prepare_ready_proposal(
@@ -162,6 +185,23 @@ async def test_list_articles_returns_block_counts(
         assert row["title"]
         assert row["status"] == "draft"
         assert row["created_at"]
+
+
+async def test_delete_all_articles_removes_everything_for_project(
+    client, project, session_factory, tmp_path
+):
+    await _prepare_ready_proposal(client, project, session_factory, tmp_path)
+    build = await client.post(f"/projects/{project['id']}/articles/build")
+    assert build.status_code == 200, build.text
+    assert build.json()["count"] >= 2
+
+    delete_resp = await client.delete(f"/projects/{project['id']}/articles")
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert delete_resp.json()["deleted_count"] >= 2
+
+    list_resp = await client.get(f"/projects/{project['id']}/articles")
+    assert list_resp.status_code == 200, list_resp.text
+    assert list_resp.json() == []
 
 
 async def test_get_article_detail_returns_blocks_ordered(
@@ -561,10 +601,32 @@ async def test_confirm_all_flips_only_proposed(
     assert r2.status_code == 200
     assert r2.json()["confirmed_count"] == 0
 
-    # Build: only the confirmed ones become articles.
+    async with session_factory() as db:
+        refreshed = (
+            await db.execute(
+                select(ArticleCandidate)
+                .where(ArticleCandidate.proposal_id == proposal_id)
+                .options(
+                    selectinload(ArticleCandidate.candidate_fragments).selectinload(
+                        ArticleCandidateFragment.fragment
+                    )
+                )
+            )
+        ).scalars().all()
+    expected_buildable = sum(
+        1
+        for candidate in refreshed
+        if candidate.status.value == "confirmed"
+        and any(
+            _is_meaningful_body_fragment(item.fragment)
+            for item in candidate.candidate_fragments
+        )
+    )
+
+    # Build: only confirmed candidates with meaningful body content become articles.
     r3 = await client.post(f"/projects/{project['id']}/articles/build")
     assert r3.status_code == 200
-    assert r3.json()["count"] == len(cands) - 1
+    assert r3.json()["count"] == expected_buildable
 
 
 async def test_confirm_all_unknown_proposal_returns_404(client, project):

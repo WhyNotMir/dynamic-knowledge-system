@@ -10,91 +10,53 @@ import {
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { ArticleListItem } from "@/lib/types";
+import type { ArticleSidebarGroup } from "@/lib/types";
 
-const UNASSIGNED_NODES_LABEL = "Unassigned Nodes";
-const UNASSIGNED_ARTICLES_LABEL = "Unassigned Articles";
-const STRUCTURED_FALLBACK_LABEL = "Structured";
-const NOISY_SECTION_LABELS = new Set(["unrelated", "general", "uncategorized"]);
-
-type SidebarGroup = {
-  key: string;
-  label: string;
-  articles: ArticleListItem[];
-};
-
-function normalizeSectionLabel(article: ArticleListItem) {
-  const raw = article.suggested_section?.trim();
-  if (!raw) {
-    return article.structural_block_id ? STRUCTURED_FALLBACK_LABEL : UNASSIGNED_ARTICLES_LABEL;
-  }
-
-  if (NOISY_SECTION_LABELS.has(raw.toLowerCase())) {
-    return article.structural_block_id ? STRUCTURED_FALLBACK_LABEL : UNASSIGNED_ARTICLES_LABEL;
-  }
-
-  return raw;
-}
-
-function groupBySection(articles: ArticleListItem[]) {
-  const groups = new Map<string, SidebarGroup>();
-
-  const ensureGroup = (key: string, label: string) => {
-    const existing = groups.get(key);
-    if (existing) {
-      return existing;
-    }
-    const created: SidebarGroup = { key, label, articles: [] };
-    groups.set(key, created);
-    return created;
-  };
-
-  for (const a of articles) {
-    if (!a.structural_block_id && a.kind === "node") {
-      ensureGroup(`nodes:${UNASSIGNED_NODES_LABEL}`, UNASSIGNED_NODES_LABEL).articles.push(a);
-      continue;
-    }
-
-    const label = normalizeSectionLabel(a);
-    const prefix = a.structural_block_id ? "structured" : "unassigned";
-    ensureGroup(`${prefix}:${label}`, label).articles.push(a);
-  }
-
-  const entries = Array.from(groups.values());
-  return [
-    ...entries.filter((group) => group.label === UNASSIGNED_NODES_LABEL),
-    ...entries.filter((group) => group.key.startsWith("unassigned:")),
-    ...entries.filter(
-      (group) =>
-        group.label !== UNASSIGNED_NODES_LABEL && !group.key.startsWith("unassigned:")
-    ),
-  ];
+function groupHasActiveChild(group: ArticleSidebarGroup, pathname: string, projectId: string) {
+  const articlePath = (articleId: string) => `/projects/${projectId}/articles/${articleId}`;
+  return (
+    group.articles.some((article) => pathname === articlePath(article.id)) ||
+    (group.groups?.some((child) => groupHasActiveChild(child, pathname, projectId)) ?? false)
+  );
 }
 
 function SidebarSection({
-  name, articles, projectId,
+  name, articles, projectId, depth = 0, groups = [], totalCount,
 }: {
-  name: string; articles: ArticleListItem[]; projectId: string;
+  name: string;
+  articles: ArticleSidebarGroup["articles"];
+  projectId: string;
+  depth?: number;
+  groups?: ArticleSidebarGroup[];
+  totalCount?: number;
 }) {
   const pathname = usePathname();
   const articlePath = (articleId: string) => `/projects/${projectId}/articles/${articleId}`;
-  // Auto-expand when a child article is active so the user doesn't lose
-  // their place after a navigation or page refresh.
   const hasActive = articles.some((a) => pathname === articlePath(a.id));
-  const [expanded, setExpanded] = useState(true);
-  const isOpen = expanded || hasActive;
+  const childHasActive = groups.some((child) => groupHasActiveChild(child, pathname, projectId));
+  const [expanded, setExpanded] = useState(depth < 1 || hasActive || childHasActive);
+  const isOpen = expanded;
+  const computedTotalCount = articles.length + groups.reduce((acc, child) => acc + child.total_count, 0);
 
   return (
-    <div className="mb-1">
+    <div className="mb-1" style={{ paddingLeft: depth === 0 ? 0 : Math.min(depth * 10, 20) }}>
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex items-start gap-1.5 px-3 py-1.5 w-full text-left text-xs font-mono uppercase tracking-widest text-vault-muted hover:text-vault-text transition-colors"
+        className={cn(
+          "flex items-start gap-1.5 px-3 py-1.5 w-full text-left transition-colors rounded-lg",
+          depth === 0
+            ? "text-xs font-mono uppercase tracking-widest text-vault-muted hover:text-vault-text"
+            : "text-[11px] font-mono uppercase tracking-[0.22em] text-vault-muted/75 hover:text-vault-text"
+        )}
       >
         <span className="mt-0.5 shrink-0">
           {isOpen ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
         </span>
         <span className="min-w-0 whitespace-normal break-words leading-5">{name}</span>
+        <span className="ml-auto shrink-0 rounded-full border border-vault-border px-1.5 py-0.5 text-[10px] tracking-normal text-vault-muted/80">
+          {totalCount ?? computedTotalCount}
+        </span>
       </button>
       <AnimatePresence initial={false}>
         {isOpen && (
@@ -106,6 +68,17 @@ function SidebarSection({
             transition={{ duration: 0.15, ease: "easeOut" }}
             className="overflow-hidden"
           >
+            {groups.map((child) => (
+              <SidebarSection
+                key={child.key}
+                name={child.label}
+                articles={child.articles}
+                groups={child.groups}
+                totalCount={child.total_count}
+                depth={depth + 1}
+                projectId={projectId}
+              />
+            ))}
             {articles.map((a) => {
               const active = pathname === articlePath(a.id);
               return (
@@ -118,6 +91,7 @@ function SidebarSection({
                       ? "bg-vault-gold-10 text-vault-gold border-l-2 border-vault-gold pl-3.5"
                       : "text-vault-muted hover:text-vault-text hover:bg-vault-surface-2"
                   )}
+                  style={{ marginLeft: depth > 0 ? Math.min(depth * 6, 18) : 0 }}
                 >
                   <span className="flex items-start gap-2 min-w-0">
                     {a.kind === "node" && (
@@ -153,8 +127,10 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
     queryKey: ["articles", projectId],
     queryFn: () => api.articles.list(projectId),
   });
-
-  const groups = groupBySection(articles);
+  const { data: sidebarGroups = [] } = useQuery({
+    queryKey: ["articles-sidebar", projectId],
+    queryFn: () => api.articles.sidebar(projectId),
+  });
 
   const navItems = [
     { href: `/projects/${projectId}/articles`, icon: BookOpen,  label: "Articles"  },
@@ -208,14 +184,18 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
           {articles.length === 0 ? (
             <p className="text-xs text-vault-muted px-4 py-2">No articles yet</p>
           ) : (
-            groups.map((group) => (
-              <SidebarSection
-                key={group.key}
-                name={group.label}
-                articles={group.articles}
-                projectId={projectId}
-              />
-            ))
+            <>
+              {sidebarGroups.map((group) => (
+                <SidebarSection
+                  key={group.key}
+                  name={group.label}
+                  articles={group.articles}
+                  groups={group.groups}
+                  totalCount={group.total_count}
+                  projectId={projectId}
+                />
+              ))}
+            </>
           )}
         </div>
 
