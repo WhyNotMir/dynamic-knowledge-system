@@ -5,10 +5,10 @@ from loguru import logger
 
 from app.agents.base import configure_langsmith
 from app.agents.graph.checkpointer import ensure_langgraph_checkpoint_schema
-from app.agents.graph.ingest_pipeline import (
-    create_ingest_pipeline_state,
-    resolve_job_project_id,
-    run_ingest_pipeline,
+from app.agents.graph.ingestion_workflow import (
+    create_ingestion_workflow_state,
+    resolve_ingestion_job_project_id,
+    run_ingestion_workflow,
 )
 from app.config import settings
 
@@ -23,7 +23,7 @@ async def ingest_source(ctx: dict, source_id_str: str) -> None:
     source_id = uuid.UUID(source_id_str)
     logger.info(f"[worker] Starting ingestion for source {source_id}")
 
-    project_id = await resolve_job_project_id(
+    project_id = await resolve_ingestion_job_project_id(
         job_kind="ingest_source",
         source_id=source_id,
     )
@@ -31,12 +31,12 @@ async def ingest_source(ctx: dict, source_id_str: str) -> None:
         logger.error(f"[worker] Could not resolve project for source {source_id}")
         return
 
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=project_id,
         job_kind="ingest_source",
         source_id=source_id,
     )
-    result = await run_ingest_pipeline(state)
+    result = await run_ingestion_workflow(state)
     if result["status"] == "failed":
         logger.warning(
             f"[worker] Ingestion graph failed for source {source_id}: "
@@ -50,7 +50,7 @@ async def propose_structure(ctx: dict, proposal_id_str: str) -> None:
     proposal_id = uuid.UUID(proposal_id_str)
     logger.info(f"[worker] Starting structure proposal for {proposal_id}")
 
-    project_id = await resolve_job_project_id(
+    project_id = await resolve_ingestion_job_project_id(
         job_kind="propose_structure",
         proposal_id=proposal_id,
     )
@@ -58,12 +58,12 @@ async def propose_structure(ctx: dict, proposal_id_str: str) -> None:
         logger.error(f"[worker] Could not resolve project for proposal {proposal_id}")
         return
 
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=project_id,
         job_kind="propose_structure",
         proposal_id=proposal_id,
     )
-    result = await run_ingest_pipeline(state)
+    result = await run_ingestion_workflow(state)
     if result["status"] == "failed":
         logger.warning(
             f"[worker] Structure graph failed for proposal {proposal_id}: "

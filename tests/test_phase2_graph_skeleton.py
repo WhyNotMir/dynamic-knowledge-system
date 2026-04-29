@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import uuid
 
-from app.agents.graph.ingest_pipeline import (
-    build_ingest_pipeline_graph,
-    build_ingest_pipeline_config,
-    create_ingest_pipeline_state,
-    get_ingest_pipeline_state_snapshot,
-    run_ingest_pipeline,
+from app.agents.graph.ingestion_workflow import (
+    build_ingestion_workflow_graph,
+    build_ingestion_workflow_config,
+    create_ingestion_workflow_state,
+    get_ingestion_workflow_state_snapshot,
+    run_ingestion_workflow,
 )
 from app.agents.graph.runtime import append_event, persist_buffered_events
 from app.models.ingestion_event import IngestionEventLevel
 
 
-def test_ingest_pipeline_graph_compiles():
-    graph = build_ingest_pipeline_graph()
+def test_ingestion_workflow_graph_compiles():
+    graph = build_ingestion_workflow_graph()
     assert graph is not None
     assert graph.checkpointer is not None
 
@@ -37,7 +37,7 @@ class _FakeSession:
         self.committed = True
 
 
-async def test_ingest_pipeline_runs_real_ingest_node(monkeypatch):
+async def test_ingestion_workflow_runs_real_ingest_node(monkeypatch):
     calls: list[tuple[str, object]] = []
     persist_session = _FakeSession()
 
@@ -45,11 +45,11 @@ async def test_ingest_pipeline_runs_real_ingest_node(monkeypatch):
         calls.append(("ingest", source_id))
 
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.AsyncSessionLocal",
+        "app.agents.graph.ingestion_workflow.AsyncSessionLocal",
         lambda: _FakeSession(),
     )
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.run_ingestion",
+        "app.agents.graph.ingestion_workflow.run_ingestion",
         fake_run_ingestion,
     )
     monkeypatch.setattr(
@@ -59,13 +59,13 @@ async def test_ingest_pipeline_runs_real_ingest_node(monkeypatch):
 
     project_id = uuid.uuid4()
     source_id = uuid.uuid4()
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=project_id,
         job_kind="ingest_source",
         source_id=source_id,
     )
 
-    result = await run_ingest_pipeline(state)
+    result = await run_ingestion_workflow(state)
 
     assert result["status"] == "completed"
     assert result["result"]["completed_node"] == "ingest_source"
@@ -73,7 +73,7 @@ async def test_ingest_pipeline_runs_real_ingest_node(monkeypatch):
     assert result["events"][-1]["node"] == "completed"
 
 
-async def test_ingest_pipeline_runs_real_propose_node(monkeypatch):
+async def test_ingestion_workflow_runs_real_propose_node(monkeypatch):
     calls: list[tuple[str, object]] = []
     persist_session = _FakeSession()
 
@@ -81,11 +81,11 @@ async def test_ingest_pipeline_runs_real_propose_node(monkeypatch):
         calls.append(("propose", proposal_id))
 
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.AsyncSessionLocal",
+        "app.agents.graph.ingestion_workflow.AsyncSessionLocal",
         lambda: _FakeSession(),
     )
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.run_structure_proposal",
+        "app.agents.graph.ingestion_workflow.run_structure_proposal",
         fake_run_structure_proposal,
     )
     monkeypatch.setattr(
@@ -95,13 +95,13 @@ async def test_ingest_pipeline_runs_real_propose_node(monkeypatch):
 
     project_id = uuid.uuid4()
     proposal_id = uuid.uuid4()
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=project_id,
         job_kind="propose_structure",
         proposal_id=proposal_id,
     )
 
-    result = await run_ingest_pipeline(state)
+    result = await run_ingestion_workflow(state)
 
     assert result["status"] == "completed"
     assert result["result"]["completed_node"] == "propose_structure"
@@ -109,18 +109,18 @@ async def test_ingest_pipeline_runs_real_propose_node(monkeypatch):
     assert result["events"][0]["node"] == "propose_structure"
 
 
-async def test_ingest_pipeline_marks_failure_when_service_raises(monkeypatch):
+async def test_ingestion_workflow_marks_failure_when_service_raises(monkeypatch):
     persist_session = _FakeSession()
 
     async def fake_run_ingestion(source_id, db):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.AsyncSessionLocal",
+        "app.agents.graph.ingestion_workflow.AsyncSessionLocal",
         lambda: _FakeSession(),
     )
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.run_ingestion",
+        "app.agents.graph.ingestion_workflow.run_ingestion",
         fake_run_ingestion,
     )
     monkeypatch.setattr(
@@ -128,13 +128,13 @@ async def test_ingest_pipeline_marks_failure_when_service_raises(monkeypatch):
         lambda: persist_session,
     )
 
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=uuid.uuid4(),
         job_kind="ingest_source",
         source_id=uuid.uuid4(),
     )
 
-    result = await run_ingest_pipeline(state)
+    result = await run_ingestion_workflow(state)
 
     assert result["status"] == "failed"
     assert result["result"]["failed_node"] == "ingest_source"
@@ -142,7 +142,7 @@ async def test_ingest_pipeline_marks_failure_when_service_raises(monkeypatch):
     assert result["events"][-1]["node"] == "failed"
 
 
-async def test_resolve_job_project_id_for_source(monkeypatch):
+async def test_resolve_ingestion_job_project_id_for_source(monkeypatch):
     project_id = uuid.uuid4()
 
     class _FakeResult:
@@ -153,14 +153,14 @@ async def test_resolve_job_project_id_for_source(monkeypatch):
         async def execute(self, stmt):
             return _FakeResult()
 
-    from app.agents.graph.ingest_pipeline import resolve_job_project_id
+    from app.agents.graph.ingestion_workflow import resolve_ingestion_job_project_id
 
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.AsyncSessionLocal",
+        "app.agents.graph.ingestion_workflow.AsyncSessionLocal",
         lambda: _FakeLookupSession(),
     )
 
-    resolved = await resolve_job_project_id(
+    resolved = await resolve_ingestion_job_project_id(
         job_kind="ingest_source",
         source_id=uuid.uuid4(),
     )
@@ -200,12 +200,12 @@ async def test_persist_buffered_events_writes_ingestion_events(monkeypatch):
     assert persisted == 2
     assert fake_session.committed is True
     assert len(fake_session.added) == 2
-    assert fake_session.added[0].agent_name == "ingest_pipeline"
+    assert fake_session.added[0].agent_name == "ingestion_workflow"
     assert fake_session.added[0].node == "ingest_source"
     assert fake_session.added[1].level == IngestionEventLevel.ERROR
 
 
-async def test_run_ingest_pipeline_persists_events(monkeypatch):
+async def test_run_ingestion_workflow_persists_events(monkeypatch):
     fake_session = _FakeSession()
     calls = []
 
@@ -213,7 +213,7 @@ async def test_run_ingest_pipeline_persists_events(monkeypatch):
         calls.append(("ingest", source_id))
 
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.AsyncSessionLocal",
+        "app.agents.graph.ingestion_workflow.AsyncSessionLocal",
         lambda: _FakeSession(),
     )
     monkeypatch.setattr(
@@ -221,17 +221,17 @@ async def test_run_ingest_pipeline_persists_events(monkeypatch):
         lambda: fake_session,
     )
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.run_ingestion",
+        "app.agents.graph.ingestion_workflow.run_ingestion",
         fake_run_ingestion,
     )
 
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=uuid.uuid4(),
         job_kind="ingest_source",
         source_id=uuid.uuid4(),
     )
 
-    result = await run_ingest_pipeline(state)
+    result = await run_ingestion_workflow(state)
 
     assert calls
     assert result["result"]["checkpoint_id"] is not None
@@ -239,22 +239,22 @@ async def test_run_ingest_pipeline_persists_events(monkeypatch):
     assert len(fake_session.added) >= 2
 
 
-def test_build_ingest_pipeline_config_uses_run_id_as_thread_id():
+def test_build_ingestion_workflow_config_uses_run_id_as_thread_id():
     run_id = uuid.uuid4()
-    config = build_ingest_pipeline_config(run_id=run_id, checkpoint_id="ckpt-1")
+    config = build_ingestion_workflow_config(run_id=run_id, checkpoint_id="ckpt-1")
 
     assert config["configurable"]["thread_id"] == str(run_id)
     assert config["configurable"]["checkpoint_id"] == "ckpt-1"
 
 
-async def test_get_ingest_pipeline_state_snapshot_returns_latest_checkpoint(monkeypatch):
+async def test_get_ingestion_workflow_state_snapshot_returns_latest_checkpoint(monkeypatch):
     persist_session = _FakeSession()
 
     async def fake_run_ingestion(source_id, db):
         return None
 
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.AsyncSessionLocal",
+        "app.agents.graph.ingestion_workflow.AsyncSessionLocal",
         lambda: _FakeSession(),
     )
     monkeypatch.setattr(
@@ -262,17 +262,17 @@ async def test_get_ingest_pipeline_state_snapshot_returns_latest_checkpoint(monk
         lambda: persist_session,
     )
     monkeypatch.setattr(
-        "app.agents.graph.ingest_pipeline.run_ingestion",
+        "app.agents.graph.ingestion_workflow.run_ingestion",
         fake_run_ingestion,
     )
 
-    state = create_ingest_pipeline_state(
+    state = create_ingestion_workflow_state(
         project_id=uuid.uuid4(),
         job_kind="ingest_source",
         source_id=uuid.uuid4(),
     )
-    result = await run_ingest_pipeline(state)
-    snapshot = await get_ingest_pipeline_state_snapshot(run_id=state["run_id"])
+    result = await run_ingestion_workflow(state)
+    snapshot = await get_ingestion_workflow_state_snapshot(run_id=state["run_id"])
 
     assert snapshot.values["status"] == "completed"
     assert snapshot.config["configurable"]["checkpoint_id"] == result["result"]["checkpoint_id"]

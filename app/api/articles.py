@@ -3,17 +3,13 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from loguru import logger
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.application.articles.build_service import (
-    ProposalNotFoundError,
-    ProposalNotReadyError,
-    ReadyProposalNotFoundError,
-    build_articles_for_project,
+from app.agents.graph.article_build_workflow import (
+    ArticleBuildWorkflowError,
+    run_article_build_workflow,
 )
+from app.database import get_db
 from app.application.articles.query_service import (
     ArticleNotFoundError,
     delete_all_articles as delete_all_articles_service,
@@ -39,29 +35,21 @@ router = APIRouter(prefix="/projects/{project_id}/articles", tags=["articles"])
 async def build_articles(
     project_id: uuid.UUID,
     body: BuildArticlesRequest | None = Body(default=None),
-    db: AsyncSession = Depends(get_db),
 ):
     proposal_id = body.proposal_id if body and body.proposal_id else None
     try:
-        article_ids = await build_articles_for_project(
-            project_id,
-            db,
+        article_ids = await run_article_build_workflow(
+            project_id=project_id,
             proposal_id=proposal_id,
         )
-        await db.commit()
-    except ProposalNotFoundError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=404, detail=str(exc))
-    except (ProposalNotReadyError, ReadyProposalNotFoundError) as exc:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc))
-    except ValueError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc))
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        logger.exception(f"DB error while building articles for project {project_id}")
-        raise HTTPException(status_code=500, detail=f"Database error: {exc.__class__.__name__}")
+    except ArticleBuildWorkflowError as exc:
+        if exc.error_type == "ProposalNotFoundError":
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if exc.error_type in {"ProposalNotReadyError", "ReadyProposalNotFoundError"}:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if exc.error_type == "ValueError":
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return BuildArticlesResponse(article_ids=article_ids, count=len(article_ids))
 

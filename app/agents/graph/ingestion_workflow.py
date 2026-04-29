@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.agents.graph.checkpointer import SQLAlchemyCheckpointSaver
 from app.agents.graph.runtime import append_event, make_base_state, persist_buffered_events
-from app.agents.state import IngestPipelineState
+from app.agents.state import IngestionWorkflowState
 from app.database import AsyncSessionLocal
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import mark_ingestion_failed, run_ingestion
@@ -19,22 +19,22 @@ from app.models.source import Source
 
 JobKind = Literal["ingest_source", "propose_structure"]
 
-_INGEST_PIPELINE_CHECKPOINTER = SQLAlchemyCheckpointSaver(
+_INGESTION_WORKFLOW_CHECKPOINTER = SQLAlchemyCheckpointSaver(
     session_factory=lambda: AsyncSessionLocal(),
 )
 
 
-def create_ingest_pipeline_state(
+def create_ingestion_workflow_state(
     *,
     project_id: uuid.UUID,
     job_kind: JobKind,
     source_id: uuid.UUID | None = None,
     proposal_id: uuid.UUID | None = None,
     run_id: uuid.UUID | None = None,
-) -> IngestPipelineState:
-    """Create the state envelope for an ingest/propose graph run."""
+) -> IngestionWorkflowState:
+    """Create the state envelope for an ingestion/proposal graph run."""
 
-    state = cast(IngestPipelineState, make_base_state(project_id=project_id, run_id=run_id))
+    state = cast(IngestionWorkflowState, make_base_state(project_id=project_id, run_id=run_id))
     state["job_kind"] = job_kind
     state["source_id"] = source_id
     state["proposal_id"] = proposal_id
@@ -44,11 +44,11 @@ def create_ingest_pipeline_state(
     return state
 
 
-def _route_from_job_kind(state: IngestPipelineState) -> str:
+def _route_from_job_kind(state: IngestionWorkflowState) -> str:
     return state["job_kind"]
 
 
-def _mark_running(node_name: str, state: IngestPipelineState) -> IngestPipelineState:
+def _mark_running(node_name: str, state: IngestionWorkflowState) -> IngestionWorkflowState:
     return {
         **state,
         "status": "running",
@@ -67,11 +67,11 @@ def _mark_running(node_name: str, state: IngestPipelineState) -> IngestPipelineS
 
 def _mark_failed(
     node_name: str,
-    state: IngestPipelineState,
+    state: IngestionWorkflowState,
     *,
     message: str,
     error: str | None = None,
-) -> IngestPipelineState:
+) -> IngestionWorkflowState:
     payload = {
         "source_id": str(state.get("source_id")) if state.get("source_id") else None,
         "proposal_id": str(state.get("proposal_id")) if state.get("proposal_id") else None,
@@ -97,11 +97,11 @@ def _mark_failed(
     }
 
 
-def _route_after_service(state: IngestPipelineState) -> str:
+def _route_after_service(state: IngestionWorkflowState) -> str:
     return "failed" if state.get("status") == "failed" else "completed"
 
 
-def _complete(state: IngestPipelineState) -> IngestPipelineState:
+def _complete(state: IngestionWorkflowState) -> IngestionWorkflowState:
     node_name = state.get("current_node") or "graph"
     return {
         **state,
@@ -114,13 +114,13 @@ def _complete(state: IngestPipelineState) -> IngestPipelineState:
         "events": append_event(
             state,
             node="completed",
-            message="pipeline completed",
+            message="ingestion workflow completed",
             payload={"completed_node": node_name},
         ),
     }
 
 
-def _failed(state: IngestPipelineState) -> IngestPipelineState:
+def _failed(state: IngestionWorkflowState) -> IngestionWorkflowState:
     node_name = state.get("current_node") or "graph"
     return {
         **state,
@@ -129,7 +129,7 @@ def _failed(state: IngestPipelineState) -> IngestPipelineState:
         "events": append_event(
             state,
             node="failed",
-            message="pipeline failed",
+            message="ingestion workflow failed",
             payload={
                 "failed_node": node_name,
                 "error": (state.get("result") or {}).get("error"),
@@ -138,7 +138,7 @@ def _failed(state: IngestPipelineState) -> IngestPipelineState:
     }
 
 
-async def _ingest_source_entry(state: IngestPipelineState) -> IngestPipelineState:
+async def _ingest_source_entry(state: IngestionWorkflowState) -> IngestionWorkflowState:
     source_id = state.get("source_id")
     if source_id is None:
         return _mark_failed(
@@ -186,7 +186,7 @@ async def _ingest_source_entry(state: IngestPipelineState) -> IngestPipelineStat
     }
 
 
-async def _propose_structure_entry(state: IngestPipelineState) -> IngestPipelineState:
+async def _propose_structure_entry(state: IngestionWorkflowState) -> IngestionWorkflowState:
     proposal_id = state.get("proposal_id")
     if proposal_id is None:
         return _mark_failed(
@@ -228,7 +228,7 @@ async def _propose_structure_entry(state: IngestPipelineState) -> IngestPipeline
     }
 
 
-async def resolve_job_project_id(
+async def resolve_ingestion_job_project_id(
     *,
     job_kind: JobKind,
     source_id: uuid.UUID | None = None,
@@ -256,17 +256,17 @@ async def resolve_job_project_id(
         return result.scalar_one_or_none()
 
 
-def get_ingest_pipeline_checkpointer():
-    """Return the shared checkpointer for the ingest/propose graph.
+def get_ingestion_workflow_checkpointer():
+    """Return the shared checkpointer for the ingestion/proposal graph.
 
     The SQLAlchemy-backed saver persists checkpoints across worker restarts
     and mirrors them into MemorySaver for test doubles and same-process reads.
     """
 
-    return _INGEST_PIPELINE_CHECKPOINTER
+    return _INGESTION_WORKFLOW_CHECKPOINTER
 
 
-def build_ingest_pipeline_config(
+def build_ingestion_workflow_config(
     *,
     run_id: uuid.UUID,
     checkpoint_id: str | None = None,
@@ -281,21 +281,21 @@ def build_ingest_pipeline_config(
     return config
 
 
-async def get_ingest_pipeline_state_snapshot(
+async def get_ingestion_workflow_state_snapshot(
     *,
     run_id: uuid.UUID,
     checkpoint_id: str | None = None,
 ):
-    graph = build_ingest_pipeline_graph()
+    graph = build_ingestion_workflow_graph()
     return await graph.aget_state(
-        build_ingest_pipeline_config(run_id=run_id, checkpoint_id=checkpoint_id)
+        build_ingestion_workflow_config(run_id=run_id, checkpoint_id=checkpoint_id)
     )
 
 
-def build_ingest_pipeline_graph():
-    """Compile the ingest/propose graph."""
+def build_ingestion_workflow_graph():
+    """Compile the ingestion/proposal graph."""
 
-    graph = StateGraph(IngestPipelineState)
+    graph = StateGraph(IngestionWorkflowState)
     graph.add_node("ingest_source", _ingest_source_entry)
     graph.add_node("propose_structure", _propose_structure_entry)
     graph.add_node("completed", _complete)
@@ -328,27 +328,27 @@ def build_ingest_pipeline_graph():
     graph.add_edge("completed", END)
     graph.add_edge("failed", END)
 
-    return graph.compile(checkpointer=get_ingest_pipeline_checkpointer())
+    return graph.compile(checkpointer=get_ingestion_workflow_checkpointer())
 
 
-async def run_ingest_pipeline(
-    state: IngestPipelineState,
+async def run_ingestion_workflow(
+    state: IngestionWorkflowState,
     *,
     checkpoint_id: str | None = None,
-) -> IngestPipelineState:
+) -> IngestionWorkflowState:
     """Invoke the compiled graph and return the final state."""
 
-    graph = build_ingest_pipeline_graph()
-    config = build_ingest_pipeline_config(
+    graph = build_ingestion_workflow_graph()
+    config = build_ingestion_workflow_config(
         run_id=state["run_id"],
         checkpoint_id=checkpoint_id,
     )
     result = await graph.ainvoke(state, config=config)
-    final_state = cast(IngestPipelineState, result)
-    snapshot = await graph.aget_state(build_ingest_pipeline_config(run_id=state["run_id"]))
+    final_state = cast(IngestionWorkflowState, result)
+    snapshot = await graph.aget_state(build_ingestion_workflow_config(run_id=state["run_id"]))
     persisted_count = await persist_buffered_events(final_state)
     return cast(
-        IngestPipelineState,
+        IngestionWorkflowState,
         {
             **final_state,
             "result": {
@@ -361,11 +361,11 @@ async def run_ingest_pipeline(
 
 
 __all__ = [
-    "build_ingest_pipeline_graph",
-    "build_ingest_pipeline_config",
-    "create_ingest_pipeline_state",
-    "get_ingest_pipeline_checkpointer",
-    "get_ingest_pipeline_state_snapshot",
-    "resolve_job_project_id",
-    "run_ingest_pipeline",
+    "build_ingestion_workflow_graph",
+    "build_ingestion_workflow_config",
+    "create_ingestion_workflow_state",
+    "get_ingestion_workflow_checkpointer",
+    "get_ingestion_workflow_state_snapshot",
+    "resolve_ingestion_job_project_id",
+    "run_ingestion_workflow",
 ]

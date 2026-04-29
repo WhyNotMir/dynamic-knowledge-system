@@ -238,7 +238,7 @@ class SQLAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
         task_id: str,
         task_path: str = "",
     ) -> None:
-        # The current ingest/propose graph does not rely on persisted pending
+        # The current ingestion/proposal graph does not rely on persisted pending
         # writes. We still mirror them into the in-memory fallback so test
         # doubles and any immediate in-process resume path behave like
         # MemorySaver.

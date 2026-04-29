@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 
+from app.agents.graph.qa_workflow import QAWorkflowError, run_qa_workflow
 from app.database import get_db
 from app.application.qa.ask_service import (
     ConversationNotFoundError,
@@ -20,7 +21,6 @@ from app.application.qa.ask_service import (
     list_conversations as list_conversations_service,
     persist_ask_response,
     retrieve_context,
-    run_ask,
 )
 from app.schemas.qa import (
     AskRequest,
@@ -44,15 +44,13 @@ def _service_404(exc: ProjectNotFoundError | ConversationNotFoundError) -> HTTPE
 async def ask_project(
     project_id: uuid.UUID,
     body: AskRequest,
-    db: AsyncSession = Depends(get_db),
 ):
     try:
-        response = await run_ask(project_id, body, db)
-        await db.commit()
-        return response
-    except (ProjectNotFoundError, ConversationNotFoundError) as exc:
-        await db.rollback()
-        raise _service_404(exc) from exc
+        return await run_qa_workflow(project_id=project_id, request=body)
+    except QAWorkflowError as exc:
+        if exc.error_type in {"ProjectNotFoundError", "ConversationNotFoundError"}:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/ask/stream")

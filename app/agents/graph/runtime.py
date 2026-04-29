@@ -47,7 +47,7 @@ def append_event(
 async def persist_buffered_events(
     state: BaseRunState,
     *,
-    agent_name: str = "ingest_pipeline",
+    agent_name: str = "ingestion_workflow",
 ) -> int:
     """Persist the in-memory event buffer into ``ingestion_events``.
 

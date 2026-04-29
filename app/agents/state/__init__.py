@@ -16,8 +16,8 @@ class BaseRunState(TypedDict, total=False):
     dlq: list[dict[str, Any]]
 
 
-class IngestPipelineState(BaseRunState, total=False):
-    """State for the ingest/propose workflow."""
+class IngestionWorkflowState(BaseRunState, total=False):
+    """State for the ingestion/proposal workflow."""
 
     job_kind: Literal["ingest_source", "propose_structure"]
     source_id: uuid.UUID | None
@@ -27,4 +27,31 @@ class IngestPipelineState(BaseRunState, total=False):
     result: dict[str, Any]
 
 
-__all__ = ["BaseRunState", "IngestPipelineState"]
+class QAWorkflowState(BaseRunState, total=False):
+    """State for a single Q&A turn."""
+
+    request: Any
+    context: Any
+    answer: Any
+    response: Any
+    status: Literal["pending", "running", "completed", "failed"]
+    current_node: str | None
+    result: dict[str, Any]
+
+
+class ArticleBuildWorkflowState(BaseRunState, total=False):
+    """State for article materialisation from a reviewed proposal."""
+
+    proposal_id: uuid.UUID | None
+    article_ids: list[uuid.UUID]
+    status: Literal["pending", "running", "completed", "failed"]
+    current_node: str | None
+    result: dict[str, Any]
+
+
+__all__ = [
+    "ArticleBuildWorkflowState",
+    "BaseRunState",
+    "IngestionWorkflowState",
+    "QAWorkflowState",
+]
