@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 
 class ConflictKind(str, enum.Enum):
-    # Baseline set for Phase 8 ContradictionJudge. Refined as evals grow.
     CONTRADICTION = "contradiction"
     NUMERIC_MISMATCH = "numeric_mismatch"
     DATE_MISMATCH = "date_mismatch"
@@ -32,8 +31,7 @@ class ConflictStatus(str, enum.Enum):
 
 
 class Conflict(Base):
-    """A pair of `ArticleBlock`s that ContradictionJudge (Phase 8) flagged
-    as contradictory. Surfaced in the Review Inbox for user resolution."""
+    """A pair of `ArticleBlock`s flagged as contradictory."""
 
     __tablename__ = "conflicts"
 

@@ -15,15 +15,7 @@ if TYPE_CHECKING:
 
 
 class BlockMultiSource(Base):
-    """Many-to-many link between `ArticleBlock` and `SourceFragment`.
-
-    Populated by:
-      * DedupService (Phase 7) — when a new fragment is detected as an
-        exact / near-duplicate of an existing block, the new fragment is
-        attached here rather than creating a new block.
-      * SynthesisAgent (Phase 7) — a synthesized block has at least two
-        source fragments; both are recorded here.
-    """
+    """Many-to-many link between `ArticleBlock` and `SourceFragment`."""
 
     __tablename__ = "block_multi_sources"
 

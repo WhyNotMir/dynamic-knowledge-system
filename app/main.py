@@ -21,8 +21,7 @@ from app.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Global LangSmith tracing bootstrap (Phase 0 Slice B). No-op unless
-    # LANGSMITH_TRACING=true in the environment.
+    # No-op unless LangSmith tracing is enabled in the environment.
     configure_langsmith()
     await ensure_langgraph_checkpoint_schema()
 

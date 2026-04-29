@@ -2,7 +2,7 @@ import shutil
 import uuid
 import aiofiles
 from pathlib import Path
-from fastapi import UploadFile
+from typing import Any
 from loguru import logger
 from app.config import settings
 
@@ -12,7 +12,7 @@ class FileStorage:
         self.base_dir = Path(settings.upload_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    async def save(self, file: UploadFile, project_id: uuid.UUID) -> str:
+    async def save(self, file: Any, project_id: uuid.UUID) -> str:
         project_dir = self.base_dir / str(project_id)
         project_dir.mkdir(parents=True, exist_ok=True)
 

@@ -16,9 +16,8 @@ if TYPE_CHECKING:
 
 class StructuralBlock(Base):
     """Hierarchical taxonomy node (tree of arbitrary depth) used to group
-    Articles inside a Project. Populated manually by the user or proposed
-    by `StructuralTaxonomyAgent` (Phase 1). An `Article` may reference any
-    node in the tree — not only leaves."""
+    articles inside a project. An article may reference any node in the tree,
+    not only leaves."""
 
     __tablename__ = "structural_blocks"
 

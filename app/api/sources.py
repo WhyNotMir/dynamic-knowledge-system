@@ -1,5 +1,4 @@
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -7,68 +6,56 @@ from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.sources.service import (
+    ProjectNotFoundError,
+    SourceNotFoundError,
+    UnsupportedSourceTypeError,
+    create_uploaded_source,
+    delete_source as delete_source_service,
+    delete_source_file,
+    get_project_asset_path,
+    get_source as get_source_service,
+    list_source_fragments,
+    list_sources as list_sources_service,
+)
 from app.database import get_db
-from app.models.source import SourceType
-from app.repositories.project_repository import ProjectRepository
-from app.repositories.source_repository import SourceRepository
 from app.schemas.source import SourceFragmentResponse, SourceResponse
-from app.domain.source_service import SourceBusyError, SourceDeletionService
-from app.storage.file_storage import file_storage
+from app.domain.source_service import SourceBusyError
 
 router = APIRouter(prefix="/projects/{project_id}/sources", tags=["sources"])
-
-ALLOWED = {".pdf", ".docx"}
-
-
-def _parse_uuid(raw: str, label: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid {label}")
 
 
 @router.post("", response_model=SourceResponse, status_code=202)
 async def upload_source(
-    project_id: str,
+    project_id: uuid.UUID,
     request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    pid = _parse_uuid(project_id, "project ID")
-
-    if await ProjectRepository(db).get(pid) is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-
     if not file.filename:
         raise HTTPException(status_code=400, detail="File name is required")
 
-    ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(ALLOWED)}",
-        )
-
     try:
-        storage_path = await file_storage.save(file, pid)
-    except OSError as e:
-        logger.exception(f"Failed to persist upload for project {pid}")
-        raise HTTPException(status_code=507, detail=f"Failed to save uploaded file: {e}")
-
-    source_type = SourceType.PDF if ext == ".pdf" else SourceType.DOCX
-    repo = SourceRepository(db)
-
-    try:
-        source = await repo.create(
-            project_id=pid,
+        source = await create_uploaded_source(
+            project_id,
             filename=file.filename,
-            source_type=source_type,
-            storage_path=storage_path,
+            upload=file,
+            db=db,
         )
         await db.commit()
+    except ProjectNotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except UnsupportedSourceTypeError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as e:
+        await db.rollback()
+        logger.exception(f"Failed to persist upload for project {project_id}")
+        raise HTTPException(status_code=507, detail=f"Failed to save uploaded file: {e}")
     except SQLAlchemyError as e:
         await db.rollback()
-        logger.exception(f"DB error while creating source for project {pid}")
+        logger.exception(f"DB error while creating source for project {project_id}")
         raise HTTPException(status_code=500, detail=f"Database error: {e.__class__.__name__}")
 
     await request.app.state.arq_pool.enqueue_job("ingest_source", str(source.id))
@@ -76,77 +63,52 @@ async def upload_source(
 
 
 @router.get("", response_model=list[SourceResponse])
-async def list_sources(project_id: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    return await SourceRepository(db).list_by_project(pid)
+async def list_sources(project_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    return await list_sources_service(project_id, db)
 
 
 @router.get("/assets/{asset_name}")
-async def get_project_asset(project_id: str, asset_name: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    project = await ProjectRepository(db).get(pid)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    asset_path = file_storage.project_path(pid, asset_name)
-    if not asset_path.is_file():
-        raise HTTPException(status_code=404, detail="Asset not found")
-    return FileResponse(asset_path)
+async def get_project_asset(project_id: uuid.UUID, asset_name: str, db: AsyncSession = Depends(get_db)):
+    try:
+        return FileResponse(await get_project_asset_path(project_id, asset_name, db))
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
-async def get_source(project_id: str, source_id: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    sid = _parse_uuid(source_id, "source ID")
-
-    source = await SourceRepository(db).get_by_project(pid, sid)
-    if source is None:
-        raise HTTPException(status_code=404, detail="Source not found")
-
-    return source
+async def get_source(project_id: uuid.UUID, source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    try:
+        return await get_source_service(project_id, source_id, db)
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/{source_id}/fragments", response_model=list[SourceFragmentResponse])
-async def list_fragments(project_id: str, source_id: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    sid = _parse_uuid(source_id, "source ID")
-
-    source = await SourceRepository(db).get_by_project(pid, sid)
-    if source is None:
-        raise HTTPException(status_code=404, detail="Source not found")
-
-    return await SourceRepository(db).list_fragments(sid)
+async def list_fragments(project_id: uuid.UUID, source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    try:
+        return await list_source_fragments(project_id, source_id, db)
+    except SourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.delete("/{source_id}", status_code=204)
-async def delete_source(project_id: str, source_id: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    sid = _parse_uuid(source_id, "source ID")
-
-    service = SourceDeletionService(db)
-
+async def delete_source(project_id: uuid.UUID, source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     try:
-        deleted_source = await service.delete_source_and_prune_articles(
-            project_id=pid,
-            source_id=sid,
-        )
-        if deleted_source is None:
-            raise HTTPException(status_code=404, detail="Source not found")
-
-        storage_path = deleted_source.storage_path
+        storage_path = await delete_source_service(project_id, source_id, db)
         await db.commit()
-    except HTTPException:
+    except SourceNotFoundError as exc:
         await db.rollback()
-        raise
+        raise HTTPException(status_code=404, detail=str(exc))
     except SourceBusyError as e:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(e))
     except SQLAlchemyError as e:
         await db.rollback()
-        logger.exception(f"DB error while deleting source {sid}")
+        logger.exception(f"DB error while deleting source {source_id}")
         raise HTTPException(status_code=500, detail=f"Database error: {e.__class__.__name__}")
 
-    if storage_path:
-        file_storage.delete_file(storage_path)
+    delete_source_file(storage_path)
 
     return Response(status_code=204)

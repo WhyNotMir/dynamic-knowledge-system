@@ -23,7 +23,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.agents.chains.title_agent import _fallback_description
-from app.domain.articles.article_builder import _is_meaningful_body_fragment, _looks_like_noise_text
+from app.domain.articles.article_text import (
+    is_meaningful_body_fragment,
+    looks_like_noise_text,
+)
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.alias import Alias
@@ -46,10 +49,10 @@ from tests.helpers import (
 
 
 def test_builder_noise_filter_identifies_pdf_artifacts():
-    assert _looks_like_noise_text("2")
-    assert _looks_like_noise_text("<EOS>")
-    assert _looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
-    assert not _looks_like_noise_text("The transformer uses multi-head attention in three different ways.")
+    assert looks_like_noise_text("2")
+    assert looks_like_noise_text("<EOS>")
+    assert looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
+    assert not looks_like_noise_text("The transformer uses multi-head attention in three different ways.")
 
 
 def test_fallback_description_uses_more_than_opening_line():
@@ -92,6 +95,7 @@ async def _prepare_ready_proposal(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     r = await client.post(f"/projects/{project['id']}/structure/propose")
     assert r.status_code == 202
@@ -99,6 +103,7 @@ async def _prepare_ready_proposal(
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     await confirm_all_candidates(client, project["id"], str(proposal_id))
 
@@ -338,12 +343,14 @@ async def test_build_preserves_inline_spans_and_image_refs(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     r = await client.post(f"/projects/{project['id']}/structure/propose")
     proposal_id = uuid.UUID(r.json()["proposal_id"])
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     await confirm_all_candidates(client, project["id"], str(proposal_id))
 
@@ -381,6 +388,7 @@ async def test_build_refreshes_aliases_and_graph_links(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     proposal = await client.post(f"/projects/{project['id']}/structure/propose")
     assert proposal.status_code == 202, proposal.text
@@ -388,6 +396,7 @@ async def test_build_refreshes_aliases_and_graph_links(
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     await confirm_all_candidates(client, project["id"], str(proposal_id))
 
@@ -504,10 +513,12 @@ async def _prepare_ready_proposal_unconfirmed(
     source_id = uuid.UUID(up.json()["id"])
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
     r = await client.post(f"/projects/{project['id']}/structure/propose")
     proposal_id = uuid.UUID(r.json()["proposal_id"])
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
     return proposal_id
 
 
@@ -618,7 +629,7 @@ async def test_confirm_all_flips_only_proposed(
         for candidate in refreshed
         if candidate.status.value == "confirmed"
         and any(
-            _is_meaningful_body_fragment(item.fragment)
+            is_meaningful_body_fragment(item.fragment)
             for item in candidate.candidate_fragments
         )
     )

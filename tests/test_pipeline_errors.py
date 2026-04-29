@@ -52,12 +52,14 @@ async def _setup_ready_proposal(
     source_id = uuid.UUID(up.json()["id"])
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     r = await client.post(f"/projects/{project['id']}/structure/propose")
     proposal_id = uuid.UUID(r.json()["proposal_id"])
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     if confirm:
         await confirm_all_candidates(client, project["id"], str(proposal_id))
@@ -101,6 +103,7 @@ async def test_build_with_pending_proposal_returns_409(
     source_id = uuid.UUID(up.json()["id"])
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     r = await client.post(f"/projects/{project['id']}/structure/propose")
     proposal_id = r.json()["proposal_id"]
@@ -241,6 +244,7 @@ async def test_structure_worker_on_empty_project_marks_ready_with_zero_candidate
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         p = await db.get(StructureProposal, proposal_id)

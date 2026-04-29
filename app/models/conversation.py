@@ -22,8 +22,7 @@ class MessageRole(str, enum.Enum):
 
 
 class Conversation(Base):
-    """Q&A chat session scoped to a project (Phase 4 activates it). Phase 0
-    creates the tables so schema is stable ahead of time."""
+    """Q&A chat session scoped to a project."""
 
     __tablename__ = "conversations"
 
@@ -39,7 +38,7 @@ class Conversation(Base):
         index=True,
     )
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    # Rolling summary for long-history compression (Phase 10).
+    # Rolling summary for long-history compression.
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

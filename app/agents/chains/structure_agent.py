@@ -1,23 +1,8 @@
-"""Structure agent — LangChain implementation (Phase 0 Slice C).
+"""Structure agent for candidate titles and section grouping.
 
-Behaviour stays 1:1 with the pre-LangChain structure agent it replaced:
-
-* Per-candidate title: LLM call, retried on transient network errors.
-  On quota / rate-limit / persistent-HTTP errors we flip into fallback
-  mode for the rest of the proposal and synthesize titles from the
-  source heading (``_fallback_title``).
-* Hierarchy: a single LLM call that groups the candidate titles into
-  2–5 sections. On any failure we fall back to flat grouping (section =
-  ``source_section_path`` or ``"General"``).
-* Public entry point ``propose_structure(candidates)`` has the exact
-  same signature + side-effects as before — tests monkeypatch it by
-  string path, so the shape is load-bearing.
-
-The LangChain parts:
-* ``ChatGroq`` via ``get_chat_llm()`` — same Groq model from config.
-* ``ChatPromptTemplate`` for both calls.
-* ``PydanticOutputParser`` for hierarchy (structured output with a
-  simple recovery on malformed JSON).
+The public entry point enriches candidate dictionaries with proposed article
+titles and top-level sections. If the LLM is unavailable, deterministic
+fallbacks keep the proposal pipeline moving.
 """
 from __future__ import annotations
 
@@ -33,11 +18,6 @@ from app.agents.base import (
     with_retry,
 )
 from app.agents.prompts.structure_prompts import HIERARCHY_PROMPT, TITLE_PROMPT
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _preview(fragments: list, max_chars: int = 2500) -> str:
@@ -131,11 +111,6 @@ def _strip_json_fence(raw: str) -> str:
     return body.strip()
 
 
-# ---------------------------------------------------------------------------
-# LLM calls
-# ---------------------------------------------------------------------------
-
-
 @with_retry
 async def _propose_title_llm(content: str, hint: str | None) -> str:
     """Call the title chain once, with transient retries."""
@@ -180,11 +155,6 @@ async def _propose_hierarchy_llm(titles: list[str]) -> dict[str, list[str]]:
         if isinstance(entries, list):
             result[str(section)] = [str(t) for t in entries]
     return result or {"General": list(titles)}
-
-
-# ---------------------------------------------------------------------------
-# Public entry point (same signature as the legacy agent)
-# ---------------------------------------------------------------------------
 
 
 async def propose_structure(

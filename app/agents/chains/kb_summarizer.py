@@ -1,4 +1,4 @@
-"""Phase 1 KB summarizer with deterministic fallback."""
+"""Knowledge-base summarizer with deterministic fallback."""
 from __future__ import annotations
 
 import json

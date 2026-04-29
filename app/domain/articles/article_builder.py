@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-import unicodedata
 import uuid
 
 from loguru import logger
@@ -9,7 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.agents.chains.title_agent import TitleAgentOutput, enrich_candidate_metadata
+from app.domain.articles.article_text import (
+    candidate_description,
+    internal_headings,
+    is_meaningful_body_fragment,
+)
+from app.domain.articles.block_builder import has_meaningful_body, prepare_article_blocks
+from app.domain.articles.metadata_service import enrich_or_fallback_candidate_metadata
+from app.domain.articles.slug_service import slugify, unique_slug_for_project
 from app.domain.linking.service import refresh_project_links
 from app.models.article import Article, ArticleBlock, ArticleKind, ArticleStatus
 from app.models.article_candidate import (
@@ -20,180 +25,7 @@ from app.models.article_candidate import (
     StructureProposal,
 )
 from app.models.project import Project
-from app.models.source_fragment import ElementType
 from app.models.structural_block import StructuralBlock
-
-
-_SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
-_NOISE_ONLY_RE = re.compile(r"^[\W\d_]+$")
-
-
-def _normalise_heading_text(value: str | None) -> str:
-    if not value:
-        return ""
-    collapsed = " ".join(value.split())
-    return collapsed.strip().casefold()
-
-
-def _looks_like_noise_text(value: str | None) -> bool:
-    if not value:
-        return True
-
-    stripped = " ".join(value.split()).strip()
-    if not stripped:
-        return True
-
-    lowered = stripped.casefold()
-    if lowered in {"<eos>", "eos"}:
-        return True
-
-    bad_markers = ("arxiv:", "[cs.", "gnmt", "en-de", "en-fr", "wsj")
-    if any(marker in lowered for marker in bad_markers):
-        return True
-
-    alpha = sum(char.isalpha() for char in stripped)
-    digits = sum(char.isdigit() for char in stripped)
-    if len(stripped) <= 2 and alpha == 0:
-        return True
-    if _NOISE_ONLY_RE.fullmatch(stripped):
-        return True
-    if alpha == 0 and digits > 0:
-        return True
-    if stripped.isupper() and digits > 0 and alpha < 6:
-        return True
-
-    return False
-
-
-def _is_meaningful_body_fragment(fragment) -> bool:
-    if fragment is None:
-        return False
-    if _looks_like_noise_text(fragment.content):
-        return False
-    return fragment.element_type in {
-        ElementType.PARAGRAPH,
-        ElementType.LIST_ITEM,
-        ElementType.TABLE,
-        ElementType.QUOTE,
-        ElementType.CODE_BLOCK,
-        ElementType.IMAGE,
-    }
-
-
-def _candidate_description(candidate_fragments: list[ArticleCandidateFragment]) -> str | None:
-    for item in candidate_fragments:
-        fragment = item.fragment
-        if fragment is None:
-            continue
-        if fragment.element_type in {ElementType.PARAGRAPH, ElementType.QUOTE, ElementType.CODE_BLOCK}:
-            text = " ".join(fragment.content.split()).strip()
-            if text:
-                return text[:280]
-    return None
-
-
-def _internal_headings(candidate_fragments: list[ArticleCandidateFragment]) -> list[str]:
-    headings: list[str] = []
-    seen: set[str] = set()
-    for item in candidate_fragments:
-        fragment = item.fragment
-        if fragment is None:
-            continue
-        if fragment.element_type != ElementType.HEADING:
-            continue
-        if (fragment.heading_level or 0) < 2:
-            continue
-        text = fragment.content.strip()
-        if not text:
-            continue
-        key = text.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        headings.append(text)
-    return headings
-
-
-def _fallback_metadata(
-    candidate: ArticleCandidate,
-    candidate_fragments: list[ArticleCandidateFragment],
-    available_structural_blocks: list[str],
-) -> TitleAgentOutput:
-    suggested_block = None
-    for value in (candidate.suggested_section, candidate.source_section_path):
-        if value and value in available_structural_blocks:
-            suggested_block = value
-            break
-
-    return TitleAgentOutput(
-        title=candidate.title,
-        description=_candidate_description(candidate_fragments),
-        suggested_structural_block=suggested_block,
-    )
-
-
-def _slugify(title: str) -> str:
-    """Cheap deterministic slug: NFKD → ASCII → lowercase → alnum-hyphen.
-
-    Not meant to handle Cyrillic / CJK nicely (Phase 3 AliasAgent will own
-    richer slug rules). Good enough for Phase 0: stable, URL-safe, and
-    length-capped. Uniqueness inside a project is guaranteed by the caller
-    via a short hex suffix when collisions occur.
-    """
-    normalised = unicodedata.normalize("NFKD", title)
-    ascii_str = normalised.encode("ascii", "ignore").decode("ascii")
-    lowered = ascii_str.lower().strip()
-    slug = _SLUG_NON_ALNUM.sub("-", lowered).strip("-")
-    if not slug:
-        # Fallback when the title collapses to empty ASCII (e.g. all Cyrillic).
-        slug = f"article-{uuid.uuid4().hex[:8]}"
-    return slug[:200]
-
-
-async def _unique_slug_for_project(
-    db: AsyncSession,
-    project_id: uuid.UUID,
-    base_slug: str,
-    taken: set[str],
-) -> str:
-    """Return a slug unique inside `project_id`.
-
-    Takes an in-memory `taken` set so that inside a single build pass we
-    don't collide with slugs just created in the same transaction (those
-    are not visible to the SELECT until flush).
-    """
-    candidate = base_slug
-    if candidate not in taken:
-        existing = await db.execute(
-            select(Article.id).where(
-                Article.project_id == project_id,
-                Article.slug == candidate,
-            )
-        )
-        if existing.scalar_one_or_none() is None:
-            taken.add(candidate)
-            return candidate
-
-    # Collision — append a short uuid suffix and retry once. Statistically
-    # safe for any realistic scale.
-    for _ in range(5):
-        suffix = uuid.uuid4().hex[:6]
-        candidate = f"{base_slug}-{suffix}"[:200]
-        if candidate in taken:
-            continue
-        existing = await db.execute(
-            select(Article.id).where(
-                Article.project_id == project_id,
-                Article.slug == candidate,
-            )
-        )
-        if existing.scalar_one_or_none() is None:
-            taken.add(candidate)
-            return candidate
-
-    raise RuntimeError(
-        f"Unable to find a unique slug for base '{base_slug}' in project {project_id}"
-    )
 
 
 async def build_articles_from_proposal(
@@ -249,16 +81,18 @@ async def build_articles_from_proposal(
         # everything at once if review isn't needed.)
         if candidate.status != CandidateStatus.CONFIRMED:
             continue
+        if not candidate.candidate_fragments:
+            raise ValueError(f"Candidate {candidate.id} has no linked fragments")
 
-        base_slug = _slugify(candidate.title)
-        slug = await _unique_slug_for_project(
+        base_slug = slugify(candidate.title)
+        slug = await unique_slug_for_project(
             db, proposal.project_id, base_slug, slugs_in_pass
         )
 
         body_fragments = [
             item.fragment
             for item in candidate.candidate_fragments
-            if _is_meaningful_body_fragment(item.fragment)
+            if is_meaningful_body_fragment(item.fragment)
         ]
         if not body_fragments:
             logger.warning(
@@ -279,24 +113,18 @@ async def build_articles_from_proposal(
             "proposed_title": candidate.title,
             "suggested_section": candidate.suggested_section,
             "source_section_path": candidate.source_section_path,
-            "internal_headings": _internal_headings(candidate.candidate_fragments),
+            "internal_headings": internal_headings(candidate.candidate_fragments),
             "fragments": [
                 item.fragment for item in candidate.candidate_fragments if item.fragment is not None
             ],
         }
-        try:
-            metadata = await enrich_candidate_metadata(
-                project_name=project.name if project is not None else "Knowledge Base",
-                kb_summary=project.summary if project is not None else None,
-                candidate=candidate_payload,
-                available_blocks=list(available_structural_blocks),
-            )
-        except Exception:
-            metadata = _fallback_metadata(
-                candidate,
-                candidate.candidate_fragments,
-                list(available_structural_blocks),
-            )
+        metadata = await enrich_or_fallback_candidate_metadata(
+            project_name=project.name if project is not None else "Knowledge Base",
+            kb_summary=project.summary if project is not None else None,
+            candidate=candidate,
+            candidate_payload=candidate_payload,
+            available_structural_blocks=list(available_structural_blocks),
+        )
 
         if metadata.suggested_structural_block or candidate.suggested_section:
             result = await db.execute(
@@ -308,63 +136,9 @@ async def build_articles_from_proposal(
             )
             structural_block_id = result.scalar_one_or_none()
 
-        candidate_fragments = sorted(
-            candidate.candidate_fragments,
-            key=lambda item: item.position_index,
-        )
+        prepared_blocks = prepare_article_blocks(candidate)
 
-        prepared_blocks: list[tuple] = []
-        candidate_title_key = _normalise_heading_text(candidate.title)
-        source_heading_key = _normalise_heading_text(candidate.source_section_path)
-        skipped_title_heading = False
-
-        for candidate_fragment in candidate_fragments:
-            fragment = candidate_fragment.fragment
-            if fragment is None:
-                continue
-            if _looks_like_noise_text(fragment.content):
-                continue
-
-            # Phase 1 wiki-shape prep: if the first H1 fragment just repeats
-            # the article title hint, omit it from the body so the page doesn't
-            # render title -> identical heading immediately below.
-            if (
-                not skipped_title_heading
-                and fragment.element_type == ElementType.HEADING
-                and fragment.heading_level == 1
-            ):
-                fragment_heading_key = _normalise_heading_text(fragment.content)
-                if fragment_heading_key and fragment_heading_key in {
-                    candidate_title_key,
-                    source_heading_key,
-                }:
-                    skipped_title_heading = True
-                    continue
-
-            # Invariant § 6.1 — `source_position_index` mirrors the origin
-            # fragment's `position_index`. Invariant CI asserts
-            # monotonicity per (source_id, article_id).
-            prepared_blocks.append(
-                (
-                    fragment,
-                    {
-                        "fragment_id": fragment.id,
-                        "content": fragment.content,
-                        "element_type": fragment.element_type,
-                        "position_index": len(prepared_blocks),
-                        "source_position_index": fragment.position_index,
-                        "page_number": fragment.page_number,
-                        "section_path": fragment.section_path,
-                        "list_level": fragment.list_level,
-                        "group_id": fragment.group_id,
-                        "inline_spans": fragment.inline_spans,
-                        "meta_json": fragment.meta_json,
-                        "synthesized": False,
-                    },
-                )
-            )
-
-        if not any(_is_meaningful_body_fragment(fragment) for fragment, _ in prepared_blocks):
+        if not has_meaningful_body(prepared_blocks):
             logger.warning(
                 f"Skipping candidate {candidate.id}: article body collapses to headings/captions only"
             )
@@ -375,7 +149,7 @@ async def build_articles_from_proposal(
             candidate_id=candidate.id,
             title=metadata.title,
             slug=slug,
-            description=metadata.description or _candidate_description(candidate.candidate_fragments),
+            description=metadata.description or candidate_description(candidate.candidate_fragments),
             suggested_section=candidate.suggested_section,
             kind=article_kind,
             status=ArticleStatus.DRAFT,

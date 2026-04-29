@@ -150,7 +150,9 @@ def _extract_pdf(file_path: str) -> list[ExtractedElement]:
                 idx += 1
 
         is_visualization_page = _is_pdf_visualization_page(prepared_blocks)
-        table_items: list[dict[str, Any]] = []
+        table_items: list[dict[str, Any]] = (
+            [] if is_visualization_page else _extract_pdf_tables(page, page_num)
+        )
 
         visible_blocks = [
             block

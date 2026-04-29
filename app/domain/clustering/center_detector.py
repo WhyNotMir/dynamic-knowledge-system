@@ -44,8 +44,8 @@ def _candidate_group_path(
 ) -> str:
     """Return the grouping key for a fragment within one source.
 
-    DOCX benefits from Phase 1's H1-centric grouping: one candidate per
-    top-level section, with H2/H3 preserved as internal headings.
+    DOCX benefits from H1-centric grouping: one candidate per top-level
+    section, with H2/H3 preserved as internal headings.
     PDFs are much noisier because heading detection is heuristic; grouping
     by the first semantic section below the document title produces larger,
     more coherent multi-topic candidates instead of dozens of tiny heading

@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     embedding_dimensions: int
     llm_model: str
 
-    # ---- Agent framework (Phase 0 Slice B) ---------------------------
     # Tracing is opt-in. Leave `langsmith_tracing` = False in dev/test so
     # we never make an accidental outbound call. When True, every
     # LangChain chain automatically streams spans to LangSmith.

@@ -35,7 +35,7 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
 
         if not candidates:
             proposal.status = ProposalStatus.READY
-            await db.commit()
+            await db.flush()
             logger.warning(
                 f"[structure] no candidates for project {project_id}; "
                 f"proposal {proposal_id} marked READY with 0 candidates"
@@ -70,7 +70,7 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
                 )
 
         proposal.status = ProposalStatus.READY
-        await db.commit()
+        await db.flush()
 
         logger.info(
             f"[structure] proposal {proposal_id} READY: "
@@ -78,9 +78,4 @@ async def run_structure_proposal(proposal_id: uuid.UUID, db: AsyncSession) -> No
         )
 
     except Exception as exc:
-        await db.rollback()
         logger.exception(f"[structure] proposal {proposal_id} failed: {exc}")
-        # Don't re-raise — structure-proposal failures are usually deterministic
-        # (bad input / LLM-side issue), and arq retries would just keep crashing
-        # the worker on the same proposal. The proposal stays in PENDING and
-        # the UI can expose a "retry" action when needed.

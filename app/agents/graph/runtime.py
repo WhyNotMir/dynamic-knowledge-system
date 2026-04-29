@@ -31,11 +31,7 @@ def append_event(
     payload: dict[str, Any] | None = None,
     level: str = IngestionEventLevel.INFO.value,
 ) -> list[dict[str, Any]]:
-    """Return a new event buffer with one extra in-memory audit event.
-
-    Slice A only buffers events on the graph state; Slice D will persist them
-    into the ``ingestion_events`` table.
-    """
+    """Return a new event buffer with one extra in-memory audit event."""
 
     return [
         *(state.get("events") or []),
@@ -55,9 +51,8 @@ async def persist_buffered_events(
 ) -> int:
     """Persist the in-memory event buffer into ``ingestion_events``.
 
-    Slice D keeps event emission lightweight inside graph nodes and flushes the
-    buffered events once per graph run. The state is left intact so callers can
-    still inspect the in-memory events after persistence.
+    Graph nodes append lightweight event dicts to state; this flushes them
+    once per run while leaving the state intact for callers.
     """
 
     events = state.get("events") or []

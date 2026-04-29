@@ -1,4 +1,4 @@
-"""Prompt templates for the structure agent (Phase 0 Slice C).
+"""Prompt templates for the structure agent.
 
 Two roles:
 * ``title`` — given the fragments of a candidate (and an optional source
@@ -14,10 +14,6 @@ from __future__ import annotations
 
 from langchain_core.prompts import ChatPromptTemplate
 
-
-# ---------------------------------------------------------------------------
-# Raw string constants shared by the chain implementation.
-# ---------------------------------------------------------------------------
 
 TITLE_SYSTEM = (
     "You are a knowledge structure expert. "
@@ -43,13 +39,6 @@ Articles:
 
 JSON:"""
 
-
-# ---------------------------------------------------------------------------
-# LangChain ChatPromptTemplate-s.
-#
-# We escape the literal JSON example in HIERARCHY_SYSTEM so LangChain's
-# curly-brace templating doesn't try to interpret it as a variable.
-# ---------------------------------------------------------------------------
 
 TITLE_PROMPT = ChatPromptTemplate.from_messages(
     [

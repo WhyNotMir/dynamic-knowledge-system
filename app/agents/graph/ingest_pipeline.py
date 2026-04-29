@@ -12,7 +12,7 @@ from app.agents.graph.runtime import append_event, make_base_state, persist_buff
 from app.agents.state import IngestPipelineState
 from app.database import AsyncSessionLocal
 from app.domain.articles.structure_service import run_structure_proposal
-from app.domain.ingestion.ingestion_service import run_ingestion
+from app.domain.ingestion.ingestion_service import mark_ingestion_failed, run_ingestion
 from app.models.article_candidate import StructureProposal
 from app.models.source import Source
 
@@ -32,7 +32,7 @@ def create_ingest_pipeline_state(
     proposal_id: uuid.UUID | None = None,
     run_id: uuid.UUID | None = None,
 ) -> IngestPipelineState:
-    """Create the minimal state envelope for the Phase 2 pipeline graph."""
+    """Create the state envelope for an ingest/propose graph run."""
 
     state = cast(IngestPipelineState, make_base_state(project_id=project_id, run_id=run_id))
     state["job_kind"] = job_kind
@@ -114,7 +114,7 @@ def _complete(state: IngestPipelineState) -> IngestPipelineState:
         "events": append_event(
             state,
             node="completed",
-            message="pipeline skeleton completed",
+            message="pipeline completed",
             payload={"completed_node": node_name},
         ),
     }
@@ -153,8 +153,15 @@ async def _ingest_source_entry(state: IngestPipelineState) -> IngestPipelineStat
     try:
         async with AsyncSessionLocal() as db:
             await run_ingestion(source_id, db)
+            await db.commit()
     except Exception as exc:  # pragma: no cover - defensive catch around worker/runtime failures
         logger.exception(f"[graph] ingest_source failed for {source_id}: {exc}")
+        try:
+            async with AsyncSessionLocal() as db:
+                await mark_ingestion_failed(source_id, db, error=str(exc))
+                await db.commit()
+        except Exception:
+            logger.exception(f"[graph] could not persist failure for source {source_id}")
         return _mark_failed(
             "ingest_source",
             running_state,
@@ -194,6 +201,7 @@ async def _propose_structure_entry(state: IngestPipelineState) -> IngestPipeline
     try:
         async with AsyncSessionLocal() as db:
             await run_structure_proposal(proposal_id, db)
+            await db.commit()
     except Exception as exc:  # pragma: no cover - defensive catch around worker/runtime failures
         logger.exception(f"[graph] propose_structure failed for {proposal_id}: {exc}")
         return _mark_failed(
@@ -229,8 +237,8 @@ async def resolve_job_project_id(
     """Resolve project context for a worker-triggered graph run.
 
     The arq queue currently passes only the entity id (`source_id` or
-    `proposal_id`). Slice B keeps the external job signatures stable and does a
-    lightweight lookup here before creating the graph state envelope.
+    `proposal_id`), so the worker does a lightweight lookup before creating
+    the graph state envelope.
     """
 
     async with AsyncSessionLocal() as db:
@@ -251,9 +259,8 @@ async def resolve_job_project_id(
 def get_ingest_pipeline_checkpointer():
     """Return the shared checkpointer for the ingest/propose graph.
 
-    Phase 2 hardening uses a SQLAlchemy-backed saver so checkpoints survive
-    worker restarts. The saver keeps a MemorySaver mirror as a low-friction
-    fallback for mocked sessions in tests.
+    The SQLAlchemy-backed saver persists checkpoints across worker restarts
+    and mirrors them into MemorySaver for test doubles and same-process reads.
     """
 
     return _INGEST_PIPELINE_CHECKPOINTER
@@ -286,8 +293,7 @@ async def get_ingest_pipeline_state_snapshot(
 
 
 def build_ingest_pipeline_graph():
-    """Compile the Phase 2 Slice A graph skeleton.
-    """
+    """Compile the ingest/propose graph."""
 
     graph = StateGraph(IngestPipelineState)
     graph.add_node("ingest_source", _ingest_source_entry)

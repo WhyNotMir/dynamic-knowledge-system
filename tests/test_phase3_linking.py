@@ -20,6 +20,7 @@ async def _prepare_linked_articles(client, project, session_factory, tmp_path):
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     proposal = await client.post(f"/projects/{project['id']}/structure/propose")
     assert proposal.status_code == 202, proposal.text
@@ -27,6 +28,7 @@ async def _prepare_linked_articles(client, project, session_factory, tmp_path):
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     await confirm_all_candidates(client, project["id"], str(proposal_id))
 

@@ -37,6 +37,7 @@ async def _run_pipeline_from_docx(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     proposal_resp = await client.post(f"/projects/{project['id']}/structure/propose")
     assert proposal_resp.status_code == 202, proposal_resp.text
@@ -44,6 +45,7 @@ async def _run_pipeline_from_docx(
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     await confirm_all_candidates(client, project["id"], str(proposal_id))
 

@@ -51,6 +51,7 @@ async def _upload_and_ingest(client, project, session_factory, tmp_path) -> uuid
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
     return source_id
 
 
@@ -90,6 +91,7 @@ async def test_run_structure_proposal_marks_ready_and_creates_candidates(
     # Drive the worker inline.
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         p = await db.get(StructureProposal, proposal_id)
@@ -137,6 +139,7 @@ async def test_candidate_fragment_ids_point_to_real_fragments(
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         cands = (
@@ -172,6 +175,7 @@ async def test_get_proposal_endpoint_returns_candidates(
 
     async with session_factory() as db:
         await run_structure_proposal(uuid.UUID(proposal_id), db)
+        await db.commit()
 
     r2 = await client.get(
         f"/projects/{project['id']}/structure/proposals/{proposal_id}"
@@ -189,6 +193,7 @@ async def test_run_structure_proposal_missing_proposal_noops(session_factory):
     async with session_factory() as db:
         # Should simply log + return.
         await run_structure_proposal(random_id, db)
+        await db.commit()
 
 
 async def test_list_proposals_endpoint(
@@ -218,12 +223,14 @@ async def test_proposal_exposes_internal_headings_for_multi_topic_candidate(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     r = await client.post(f"/projects/{project['id']}/structure/propose")
     proposal_id = uuid.UUID(r.json()["proposal_id"])
 
     async with session_factory() as db:
         await run_structure_proposal(proposal_id, db)
+        await db.commit()
 
     detail = await client.get(
         f"/projects/{project['id']}/structure/proposals/{proposal_id}"

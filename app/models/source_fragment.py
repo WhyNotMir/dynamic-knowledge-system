@@ -20,10 +20,6 @@ if TYPE_CHECKING:
 
 
 class ElementType(str, enum.Enum):
-    # Baseline set established in Phase 0. Phase 1 adds `quote`, `code_block`,
-    # `image`, `footnote`; Phase 12 adds `formula`. The enum is widened at the
-    # migration level — source-driven: the extractor only emits a type if the
-    # source actually contains it.
     HEADING = "heading"
     PARAGRAPH = "paragraph"
     LIST_ITEM = "list_item"
@@ -46,8 +42,7 @@ class SourceFragment(Base):
         index=True,
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # SHA-256 of the normalised content. Used by DedupService (Phase 7) for
-    # exact-duplicate detection across documents. Indexed for fast lookup.
+    # SHA-256 of normalised content for exact-duplicate detection.
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     element_type: Mapped[ElementType] = mapped_column(Enum(ElementType), nullable=False)
     heading_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -55,16 +50,14 @@ class SourceFragment(Base):
     # `w:numPr/w:ilvl` and by PDF via indent heuristics. Nullable everywhere
     # else.
     list_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Groups contiguous fragments that should be treated as a sequence by the
-    # PlacementAgent (Phase 7) — e.g. an enumerated "Step 1/2/3" list, or a
-    # block of consecutive list items at the same level. `NULL` = not grouped.
+    # Groups contiguous fragments that should be treated as a sequence.
+    # `NULL` means the fragment is not part of a group.
     group_id: Mapped[uuid.UUID | None] = mapped_column(index=True, nullable=True)
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     section_path: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     position_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Inline markup spans preserved from the source: bold / italic / code /
-    # link runs. Array of `{start, end, style, data}`. Phase 1 populates it;
-    # in Phase 0 the column exists but is always `[]`.
+    # Inline markup spans preserved from the source:
+    # `{start, end, style, data}`.
     inline_spans: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # Generic payload for per-type extras: `{"language": "python"}` on a
     # code_block, `{"attribution": "..."}` on a quote, `{"image_ref": "..."}`

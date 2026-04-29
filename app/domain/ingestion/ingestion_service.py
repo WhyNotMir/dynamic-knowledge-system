@@ -124,20 +124,16 @@ async def run_ingestion(source_id: uuid.UUID, db: AsyncSession) -> None:
 
         await repo.save_fragments(fragments)
         await repo.update_status(source_id, SourceStatus.DONE)
-
-        await db.commit()
         logger.info(f"[{source_id}] Ingestion complete")
-
     except Exception as exc:
-        await db.rollback()
         logger.exception(f"[{source_id}] Ingestion failed: {exc}")
+        await repo.update_status(source_id, SourceStatus.FAILED, error=str(exc))
 
-        # Record the failure in the DB so the UI can show a clear error and
-        # the user can re-upload. We do NOT re-raise: extraction errors are
-        # deterministic (bad file), so arq retries would just loop forever.
-        try:
-            await repo.update_status(source_id, SourceStatus.FAILED, error=str(exc))
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            logger.exception(f"[{source_id}] Failed to persist FAILED status")
+
+async def mark_ingestion_failed(
+    source_id: uuid.UUID,
+    db: AsyncSession,
+    *,
+    error: str,
+) -> None:
+    await SourceRepository(db).update_status(source_id, SourceStatus.FAILED, error=error)

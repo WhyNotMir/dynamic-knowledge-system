@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
 class CitationStatus(str, enum.Enum):
     # `unvalidated` is the default when QAAgent first emits a citation.
-    # `validated` / `rejected` are written by CitationVerifier (Phase 6).
     # `partial` = the claim is only partially supported by the fragment.
     UNVALIDATED = "unvalidated"
     VALIDATED = "validated"
@@ -27,11 +26,7 @@ class CitationStatus(str, enum.Enum):
 
 class BlockCitation(Base):
     """A single attestation that an `ArticleBlock` is supported by a
-    `SourceFragment`. Emitted by QAAgent when it cites the block in an
-    answer (Phase 4) and by SynthesisAgent for every fragment that fed a
-    merged block (Phase 7). CitationVerifier (Phase 6) flips the status
-    to `validated` / `rejected` / `partial` and records `validated_at`
-    + `verifier_version`."""
+    `SourceFragment`."""
 
     __tablename__ = "block_citations"
 

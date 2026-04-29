@@ -25,16 +25,13 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     scope_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # ~10-line KB summary refreshed by KBSummarizer (Phase 1). Passed as
-    # domain context to TitleAgent / RoutingAgent so they stay consistent
-    # with the existing corpus.
+    # Short project-level summary used as domain context by agents.
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Per-project tunables (clustering thresholds, node/article cutoffs,
     # Q&A "don't know" thresholds, etc.). Free-form JSON until schemas settle.
     settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # Owner is the User who created the project. In Phase 0 this is always
-    # `system-user`. Phase 5 activates multi-tenancy and transfers ownership
-    # to real Users at registration time.
+    # Owner is nullable so system-created projects and deleted users are both
+    # representable.
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,

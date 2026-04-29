@@ -1,4 +1,4 @@
-"""Phase 1 TitleAgent with deterministic fallback."""
+"""Title agent with deterministic fallback."""
 from __future__ import annotations
 
 import json

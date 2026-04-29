@@ -15,17 +15,14 @@ if TYPE_CHECKING:
 
 
 class EdgeKind(str, enum.Enum):
-    # `hard` = explicit inline reference found by the Phase 3 Linker
-    # (alias match inside ArticleBlock content). `soft` = top-K cosine
-    # neighbour at article level, refreshed by MaintenancePipeline.
+    # `hard` = alias match inside ArticleBlock content.
+    # `soft` = article-level semantic neighbour.
     HARD = "hard"
     SOFT = "soft"
 
 
 class GraphEdge(Base):
-    """Directed edge between two Articles. Written by Linker (`hard`) or
-    by similarity refresh (`soft`). Consumed by the graph UI and
-    Article-Detail "Referenced by" / "Related" panels (Phase 3)."""
+    """Directed edge between two articles."""
 
     __tablename__ = "graph_edges"
 

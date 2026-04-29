@@ -34,8 +34,6 @@ if TYPE_CHECKING:
 
 
 class ArticleStatus(str, enum.Enum):
-    # Extended in Phase 0 with `outdated` (article needs regen after new
-    # content landed — Phase 7) and `deprecated` (article explicitly retired).
     DRAFT = "draft"
     PUBLISHED = "published"
     OUTDATED = "outdated"
@@ -43,9 +41,6 @@ class ArticleStatus(str, enum.Enum):
 
 
 class ArticleKind(str, enum.Enum):
-    # Phase 1 activates the split: `article` = full topic page, `node` = a
-    # thinner Knowledge Node (short, reference-only). The threshold between
-    # the two is a Project setting (`min_blocks`, `min_chars`).
     ARTICLE = "article"
     NODE = "node"
 
@@ -70,8 +65,7 @@ class Article(Base):
         index=True,
     )
     title: Mapped[str] = mapped_column(String(512), nullable=False)
-    # Slug is unique within a project — the stable canonical identifier the
-    # Phase 3 Linker uses and the Phase 14 public-sharing URL is built on.
+    # Stable canonical identifier within a project.
     slug: Mapped[str] = mapped_column(String(512), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -88,7 +82,7 @@ class Article(Base):
     )
     # Denormalised list of alias strings (synonyms / abbreviations) for fast
     # Linker lookup. The authoritative record lives in the `aliases` table;
-    # this column is a read-only cache refreshed by AliasAgent (Phase 3).
+    # this column is a cache refreshed by the linker.
     aliases: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     revision_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -169,10 +163,8 @@ class ArticleBlock(Base):
     group_id: Mapped[uuid.UUID | None] = mapped_column(index=True, nullable=True)
     inline_spans: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     meta_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # True for blocks produced by SynthesisAgent (Phase 7) from a merge of
-    # two duplicates. Such blocks are the single exception to invariant § 6.2
-    # (content immutability) and must carry verified citations via
-    # BlockMultiSource + BlockCitation.
+    # Synthesized blocks are derived from multiple sources and must carry
+    # supporting links/citations rather than being treated as raw source text.
     synthesized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

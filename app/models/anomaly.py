@@ -12,7 +12,6 @@ from app.database import Base
 
 
 class AnomalyKind(str, enum.Enum):
-    # Populated by Phase 8 OutlierDetector.
     OFF_TOPIC_ARTICLE = "off_topic_article"
     OUTLIER_BLOCK = "outlier_block"
     OFF_DOMAIN_SOURCE = "off_domain_source"
@@ -33,16 +32,12 @@ class AnomalyTarget(str, enum.Enum):
 
 
 class Anomaly(Base):
-    """An article / block / source flagged by OutlierDetector (Phase 8) as
-    semantically unlike the rest of the project. Polymorphic: `target_kind`
-    picks which table `target_id` points to (no hard FK — the cascade is
-    handled via MaintenancePipeline cleanup)."""
+    """An article, block, or source flagged as semantically anomalous."""
 
     __tablename__ = "anomalies"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    # Kept as a plain UUID (no FK) because the target can live in three
-    # different tables. MaintenancePipeline is responsible for cleanup.
+    # Plain UUID because the target can live in three different tables.
     target_id: Mapped[uuid.UUID] = mapped_column(nullable=False, index=True)
     target_kind: Mapped[AnomalyTarget] = mapped_column(
         Enum(AnomalyTarget),

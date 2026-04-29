@@ -432,7 +432,7 @@ async def test_ask_endpoint_short_circuits_weak_evidence(
         raise AssertionError("QAAgent should not be called for weak evidence")
 
     monkeypatch.setattr("app.domain.qa.retrieval.embed_texts", fake_embed_texts)
-    monkeypatch.setattr("app.api.qa.answer_question", fail_if_called)
+    monkeypatch.setattr("app.application.qa.ask_service.answer_question", fail_if_called)
 
     source = Source(
         project_id=project_id,

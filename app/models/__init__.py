@@ -41,22 +41,21 @@ __all__ = [
     "ArticleBlock",
     "ArticleKind",
     "ArticleStatus",
-    # Auth skeleton (Phase 5 activates)
     "User",
     "ProjectMember",
     "ProjectRole",
     "SYSTEM_USER_ID",
-    # Taxonomy + graph (Phase 1, 3)
+    # Taxonomy + graph
     "StructuralBlock",
     "GraphEdge",
     "EdgeKind",
     "Alias",
     "AliasSource",
-    # Provenance + merging (Phase 6, 7)
+    # Provenance + merging
     "BlockMultiSource",
     "BlockCitation",
     "CitationStatus",
-    # Integrity (Phase 8)
+    # Integrity
     "Conflict",
     "ConflictKind",
     "ConflictStatus",
@@ -64,16 +63,16 @@ __all__ = [
     "AnomalyKind",
     "AnomalyStatus",
     "AnomalyTarget",
-    # Versioning + audit (Phase 9, 11)
+    # Versioning + audit
     "BlockRevision",
     "ArticleRevision",
     "RevisionReason",
     "IngestionEvent",
     "IngestionEventLevel",
-    # Q&A (Phase 4)
+    # Q&A
     "Conversation",
     "Message",
     "MessageRole",
-    # LangGraph persistence (Phase 2 hardening)
+    # LangGraph persistence
     "LangGraphCheckpoint",
 ]

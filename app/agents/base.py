@@ -1,10 +1,10 @@
-"""Agent framework base (Phase 0 Slice B).
+"""Shared agent framework primitives.
 
 Primitives shared by every LangChain / LangGraph agent in the system:
 
 * ``get_chat_llm()`` — single place that constructs a ``ChatGroq``
-  instance. Centralising it means later phases can swap providers, add
-  streaming, or attach callbacks without touching every agent.
+  instance. Centralising it keeps provider swaps, streaming, and callbacks
+  out of individual agents.
 * ``AgentError`` — normalised failure type. Agents that want to fall
   back to deterministic behaviour (cf. ``structure_agent._fallback_title``)
   catch this and proceed.
@@ -32,11 +32,6 @@ from tenacity import (
 from app.config import settings
 
 
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
 class AgentError(RuntimeError):
     """Raised when an agent can no longer make progress.
 
@@ -54,11 +49,6 @@ class AgentQuotaError(AgentError):
     """Upstream quota / rate-limit exhausted. Not safe to retry in-loop."""
 
 
-# ---------------------------------------------------------------------------
-# LLM factory
-# ---------------------------------------------------------------------------
-
-
 def get_chat_llm(*, temperature: float | None = None, model: str | None = None) -> Any:
     """Return a lazily-imported ``ChatGroq`` instance.
 
@@ -73,11 +63,6 @@ def get_chat_llm(*, temperature: float | None = None, model: str | None = None) 
         model=model or settings.llm_model,
         temperature=settings.agent_temperature if temperature is None else temperature,
     )
-
-
-# ---------------------------------------------------------------------------
-# Retry wrapper
-# ---------------------------------------------------------------------------
 
 
 def with_retry(fn):
@@ -99,11 +84,6 @@ def with_retry(fn):
     wrapper.__name__ = getattr(fn, "__name__", "wrapped")
     wrapper.__doc__ = fn.__doc__
     return wrapper
-
-
-# ---------------------------------------------------------------------------
-# LangSmith tracing bootstrap
-# ---------------------------------------------------------------------------
 
 
 def configure_langsmith() -> None:

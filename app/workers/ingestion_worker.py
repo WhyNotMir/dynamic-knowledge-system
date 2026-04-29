@@ -14,8 +14,7 @@ from app.config import settings
 
 
 async def _startup(ctx: dict) -> None:
-    # Bootstrap LangSmith tracing inside the arq worker process so any
-    # agent call from a background job is traced (Phase 0 Slice B).
+    # The worker is a separate process, so it needs its own tracing/bootstrap.
     configure_langsmith()
     await ensure_langgraph_checkpoint_schema()
 

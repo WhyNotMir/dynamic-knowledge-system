@@ -60,6 +60,7 @@ async def test_full_ui_happy_path(client, session_factory, tmp_path):
     # Simulate the worker (UI would be polling GET /sources while this runs).
     async with session_factory() as db:
         await run_ingestion(uuid.UUID(source_id), db)
+        await db.commit()
 
     # 4. UI polls list + detail until status == done
     r = await client.get(f"/projects/{project_id}/sources")
@@ -110,6 +111,7 @@ async def test_full_ui_happy_path(client, session_factory, tmp_path):
     # Worker runs.
     async with session_factory() as db:
         await run_structure_proposal(uuid.UUID(proposal_id), db)
+        await db.commit()
 
     # 6. UI polls the single proposal until status == ready
     r = await client.get(
@@ -134,7 +136,8 @@ async def test_full_ui_happy_path(client, session_factory, tmp_path):
     assert len(inbox[0]["proposal"]["candidates"]) >= 2
 
     # 7. Optional: user edits a candidate's title via PATCH
-    first_cand_id = body["candidates"][0]["id"]
+    renamed_candidate = body["candidates"][-1]
+    first_cand_id = renamed_candidate["id"]
     r = await client.patch(
         f"/projects/{project_id}/structure/candidates/{first_cand_id}",
         json={"title": "Renamed by user"},
@@ -192,6 +195,7 @@ async def test_ui_flow_two_projects_isolated(client, session_factory, tmp_path):
     source_id = uuid.UUID(r.json()["id"])
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     # p1 sees its source; p2 sees nothing.
     r1 = await client.get(f"/projects/{p1['id']}/sources")

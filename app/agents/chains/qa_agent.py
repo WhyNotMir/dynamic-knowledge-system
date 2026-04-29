@@ -1,4 +1,4 @@
-"""Phase 4 strict QA agent with deterministic fallback."""
+"""Strict QA agent with deterministic fallback."""
 from __future__ import annotations
 
 import json

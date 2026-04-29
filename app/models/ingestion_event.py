@@ -19,9 +19,7 @@ class IngestionEventLevel(str, enum.Enum):
 
 
 class IngestionEvent(Base):
-    """Audit log of every StateGraph node execution (Phase 2+) and every
-    agent call. Exposes admin traces in Phase 11. Phase 0 just creates
-    the table so later phases can write to it without another migration."""
+    """Audit log for graph nodes, agents, and background workflow events."""
 
     __tablename__ = "ingestion_events"
 

@@ -15,8 +15,6 @@ if TYPE_CHECKING:
 
 
 class AliasSource(str, enum.Enum):
-    # `auto` = produced by AliasAgent (Phase 3). `manual` = user-added.
-    # `merged` = carried over from a merged candidate/article.
     AUTO = "auto"
     MANUAL = "manual"
     MERGED = "merged"
@@ -24,9 +22,7 @@ class AliasSource(str, enum.Enum):
 
 class Alias(Base):
     """Synonym / abbreviation / alternative spelling for an Article, used
-    by the Phase 3 Linker to discover cross-references. Denormalised onto
-    `Article.aliases` for fast lookup, but the authoritative record lives
-    here."""
+    by the linker to discover cross-references."""
 
     __tablename__ = "aliases"
 

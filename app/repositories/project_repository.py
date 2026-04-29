@@ -4,19 +4,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project
-from app.schemas.project import ProjectCreate
-
 
 class ProjectRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create(self, data: ProjectCreate) -> Project:
+    async def create(
+        self,
+        *,
+        name: str,
+        description: str | None = None,
+        scope_hint: str | None = None,
+        settings: dict | None = None,
+    ) -> Project:
         project = Project(
-            name=data.name,
-            description=data.description,
-            scope_hint=data.scope_hint,
-            settings=data.settings,
+            name=name,
+            description=description,
+            scope_hint=scope_hint,
+            settings=settings,
         )
         self.db.add(project)
         await self.db.flush()

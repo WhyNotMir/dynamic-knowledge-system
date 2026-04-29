@@ -14,9 +14,7 @@ if TYPE_CHECKING:
     from app.models.project import Project
 
 
-# Phase 0 seeds a single `system-user` row and every Project is owned by
-# it. Phase 5 activates real auth (Google OAuth + email magic links, no
-# passwords) and transfers ownership to registered users.
+# System owner used for projects created before user auth is attached.
 SYSTEM_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
@@ -32,8 +30,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # Phase 5 stores Google / magic-link subject. Phase 0 only needs the
-    # column to exist so the schema is stable.
+    # External auth provider subject, when user auth is attached.
     auth_provider_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 
 
 class RevisionReason(str, enum.Enum):
-    # Snapshots are created by the Executor / agents and by manual edits.
-    # Used in Phase 9 (semantic versioning) for diff UI + rollback.
     INGEST = "ingest"
     SYNTHESIS = "synthesis"
     RESTRUCTURE = "restructure"
@@ -48,8 +46,7 @@ class BlockRevision(Base):
         nullable=False,
     )
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # `actor` is either an agent name (e.g. "SynthesisAgent") or a
-    # stringified user_id. Free-form until Phase 5 wires real auth.
+    # Agent name or stringified user id.
     actor: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

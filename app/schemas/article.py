@@ -39,8 +39,8 @@ class ArticleBlockSchema(BaseModel):
     content: str
     element_type: ElementType
     position_index: int
-    # Phase 0 addition. Nullable for synthesized blocks (Phase 7) and
-    # exposed so invariant checks can run client-side too.
+    # Nullable for synthesized blocks; exposed so invariant checks can run
+    # client-side too.
     source_position_index: int | None = None
     page_number: int | None
     section_path: str | None

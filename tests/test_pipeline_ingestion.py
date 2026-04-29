@@ -31,6 +31,7 @@ async def test_run_ingestion_produces_fragments(
     # `workers/ingestion_worker.py` does per job).
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     # Source status advanced to DONE, metadata recorded.
     async with session_factory() as db:
@@ -85,6 +86,7 @@ async def test_ingestion_marks_source_failed_on_extractor_error(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         src = await SourceRepository(db).get(source_id)
@@ -105,6 +107,7 @@ async def test_run_ingestion_preserves_rich_source_metadata(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         frags = (
@@ -159,6 +162,7 @@ async def test_run_ingestion_preserves_pdf_raw_metadata(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         src = await SourceRepository(db).get(source_id)
@@ -210,6 +214,7 @@ async def test_run_ingestion_preserves_pdf_tables(
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
+        await db.commit()
 
     async with session_factory() as db:
         frags = (

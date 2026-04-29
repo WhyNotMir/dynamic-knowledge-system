@@ -16,9 +16,6 @@ if TYPE_CHECKING:
 
 
 class SourceType(str, enum.Enum):
-    # Only `pdf` and `docx` are active in the pipeline for now; `url`, `text`,
-    # `markdown` are reserved so the Phase 12 URL-ingestion path and the Phase
-    # 14 connector imports don't need another enum migration.
     PDF = "pdf"
     DOCX = "docx"
     URL = "url"

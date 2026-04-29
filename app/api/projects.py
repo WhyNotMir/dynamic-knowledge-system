@@ -5,10 +5,16 @@ from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.projects.service import (
+    ProjectNotFoundError,
+    cleanup_project_files,
+    create_project as create_project_service,
+    delete_project as delete_project_service,
+    get_project as get_project_service,
+    list_projects as list_projects_service,
+)
 from app.database import get_db
-from app.repositories.project_repository import ProjectRepository
 from app.schemas.project import ProjectCreate, ProjectResponse
-from app.storage.file_storage import file_storage
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -25,9 +31,8 @@ async def create_project(
     data: ProjectCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    repo = ProjectRepository(db)
     try:
-        project = await repo.create(data)
+        project = await create_project_service(data, db)
         await db.commit()
         return project
     except SQLAlchemyError as e:
@@ -38,36 +43,31 @@ async def create_project(
 
 @router.get("", response_model=list[ProjectResponse])
 async def list_projects(db: AsyncSession = Depends(get_db)):
-    return await ProjectRepository(db).list_all()
+    return await list_projects_service(db)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    project = await ProjectRepository(db).get(pid)
-    if project is None:
+    project_uuid = _parse_uuid(project_id, "project ID")
+    try:
+        return await get_project_service(project_uuid, db)
+    except ProjectNotFoundError:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project
 
 
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    pid = _parse_uuid(project_id, "project ID")
-    repo = ProjectRepository(db)
-
+    project_uuid = _parse_uuid(project_id, "project ID")
     try:
-        deleted = await repo.delete(pid)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Project not found")
-
+        await delete_project_service(project_uuid, db)
         await db.commit()
-    except HTTPException:
+        cleanup_project_files(project_uuid)
+    except ProjectNotFoundError:
         await db.rollback()
-        raise
+        raise HTTPException(status_code=404, detail="Project not found")
     except SQLAlchemyError as e:
         await db.rollback()
-        logger.exception(f"DB error while deleting project {pid}")
+        logger.exception(f"DB error while deleting project {project_uuid}")
         raise HTTPException(status_code=500, detail=f"Database error: {e.__class__.__name__}")
 
-    file_storage.delete_project_dir(pid)
     return Response(status_code=204)
