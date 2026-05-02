@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.chains.qa_agent import QAAgentOutput, answer_question
 from app.domain.qa.retrieval import RetrievalResult, retrieve_relevant_blocks
+from app.domain.qa.settings import QASettings, qa_settings_from_project_settings
 from app.models.block_citation import BlockCitation, CitationStatus
 from app.models.conversation import Conversation, Message, MessageRole
 from app.models.project import Project
@@ -19,10 +20,6 @@ from app.schemas.qa import (
     ConversationListItem,
     ConversationMessage,
 )
-
-
-MIN_EVIDENCE_SCORE = 0.32
-MIN_EVIDENCE_BLOCKS = 1
 
 
 class AskServiceError(RuntimeError):
@@ -40,6 +37,7 @@ class ConversationNotFoundError(AskServiceError):
 @dataclass(frozen=True)
 class RetrievedContext:
     items: list[RetrievalResult]
+    settings: QASettings
 
     @property
     def top_score(self) -> float:
@@ -47,9 +45,9 @@ class RetrievedContext:
 
     @property
     def has_enough_evidence(self) -> bool:
-        if len(self.items) < MIN_EVIDENCE_BLOCKS:
+        if len(self.items) < self.settings.min_evidence_blocks:
             return False
-        return self.top_score >= MIN_EVIDENCE_SCORE
+        return self.top_score >= self.settings.min_evidence_score
 
 
 def citation_from_result(result: RetrievalResult) -> AskCitation:
@@ -78,20 +76,45 @@ async def ensure_project_exists(project_id: uuid.UUID, db: AsyncSession) -> None
         raise ProjectNotFoundError("Project not found")
 
 
+async def load_qa_settings(
+    project_id: uuid.UUID,
+    body: AskRequest,
+    db: AsyncSession,
+) -> QASettings:
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise ProjectNotFoundError("Project not found")
+
+    settings = qa_settings_from_project_settings(project.settings)
+    fields = body.model_fields_set
+    return QASettings(
+        top_k=body.top_k if "top_k" in fields else settings.top_k,
+        max_per_article=(
+            body.max_per_article
+            if "max_per_article" in fields
+            else settings.max_per_article
+        ),
+        min_score=body.min_score if "min_score" in fields else settings.min_score,
+        min_evidence_score=settings.min_evidence_score,
+        min_evidence_blocks=settings.min_evidence_blocks,
+    )
+
+
 async def retrieve_context(
     project_id: uuid.UUID,
     body: AskRequest,
     db: AsyncSession,
 ) -> RetrievedContext:
+    settings = await load_qa_settings(project_id, body, db)
     context = await retrieve_relevant_blocks(
         project_id,
         body.question,
         db,
-        top_k=body.top_k,
-        max_per_article=body.max_per_article,
-        min_score=body.min_score,
+        top_k=settings.top_k,
+        max_per_article=settings.max_per_article,
+        min_score=settings.min_score,
     )
-    return RetrievedContext(items=context)
+    return RetrievedContext(items=context, settings=settings)
 
 
 async def answer_from_context(

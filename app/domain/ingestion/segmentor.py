@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import uuid
 
-from app.domain.ingestion.extractor import ExtractedElement
+from app.domain.ingestion.common import ExtractedElement
 
 MIN_CHARS = 180    # short paragraphs are merged with neighbors to reduce choppy one-liners
 MAX_MERGE = 1200   # never merge beyond this total length

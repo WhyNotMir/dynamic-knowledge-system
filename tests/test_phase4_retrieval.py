@@ -10,6 +10,7 @@ from app.domain.qa.retrieval import RetrievalResult
 from app.models.article import Article, ArticleBlock, ArticleKind, ArticleStatus
 from app.models.block_citation import BlockCitation
 from app.models.conversation import Conversation, Message, MessageRole
+from app.models.project import Project
 from app.models.source import Source, SourceStatus, SourceType
 from app.models.source_fragment import ElementType, SourceFragment
 from sqlalchemy import select
@@ -487,6 +488,80 @@ async def test_ask_endpoint_short_circuits_weak_evidence(
     body = response.json()
     assert body["insufficient_context"] is True
     assert body["confidence"] == 0.0
+    assert body["citations"] == []
+
+
+async def test_ask_uses_project_qa_threshold_settings(
+    client, project, db, monkeypatch
+):
+    project_id = uuid.UUID(project["id"])
+    stored_project = await db.get(Project, project_id)
+    stored_project.settings = {
+        "qa": {
+            "min_score": 0.0,
+            "min_evidence_score": 0.95,
+        }
+    }
+    await db.commit()
+
+    async def fake_embed_texts(texts: list[str]) -> list[list[float]]:
+        return [_vector(1.0, 0.0) for _ in texts]
+
+    async def fail_if_called(question, context):
+        raise AssertionError("QAAgent should not be called below project evidence threshold")
+
+    monkeypatch.setattr("app.domain.qa.retrieval.embed_texts", fake_embed_texts)
+    monkeypatch.setattr("app.application.qa.ask_service.answer_question", fail_if_called)
+
+    source = Source(
+        project_id=project_id,
+        filename="project-settings.docx",
+        source_type=SourceType.DOCX,
+        storage_path="/tmp/project-settings.docx",
+        status=SourceStatus.DONE,
+    )
+    db.add(source)
+    await db.flush()
+
+    article = Article(
+        project_id=project_id,
+        title="Project Settings Article",
+        slug="project-settings-article",
+        kind=ArticleKind.ARTICLE,
+        status=ArticleStatus.DRAFT,
+    )
+    db.add(article)
+    await db.flush()
+
+    fragment = SourceFragment(
+        source_id=source.id,
+        content="A moderately relevant block should be rejected by strict project settings.",
+        element_type=ElementType.PARAGRAPH,
+        position_index=1,
+        embedding=_vector(0.5, 0.866),
+    )
+    db.add(fragment)
+    await db.flush()
+    db.add(
+        ArticleBlock(
+            article_id=article.id,
+            fragment_id=fragment.id,
+            content=fragment.content,
+            element_type=ElementType.PARAGRAPH,
+            position_index=0,
+            source_position_index=fragment.position_index,
+        )
+    )
+    await db.commit()
+
+    response = await client.post(
+        f"/projects/{project['id']}/ask",
+        json={"question": "Can project settings reject moderate evidence?"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["insufficient_context"] is True
     assert body["citations"] == []
 
 

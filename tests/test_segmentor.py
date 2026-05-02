@@ -1,4 +1,4 @@
-from app.domain.ingestion.extractor import ExtractedElement
+from app.domain.ingestion.common import ExtractedElement
 from app.domain.ingestion.segmentor import segment
 
 
