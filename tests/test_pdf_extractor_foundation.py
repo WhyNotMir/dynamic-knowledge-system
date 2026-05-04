@@ -7,9 +7,11 @@ from app.domain.clustering.center_detector import (
     _cluster_orphans,
     _looks_like_pdf_major_heading,
 )
-from app.domain.ingestion.common import ExtractedElement
-from app.domain.ingestion.pdf.extractor import extract_pdf
-from app.domain.ingestion.pdf.parsers import looks_like_pdf_visual_word_salad
+from app.domain.ingestion.extractor import (
+    ExtractedElement,
+    _looks_like_pdf_visual_word_salad,
+    extract,
+)
 from app.domain.ingestion.segmentor import segment
 from app.models.source import SourceType
 from app.models.source_fragment import ElementType, SourceFragment
@@ -20,8 +22,6 @@ from tests.helpers import (
     make_repeated_header_footer_pdf,
     make_two_column_pdf,
 )
-
-extract = extract_pdf
 
 
 def test_extract_pdf_includes_raw_layout_metadata(tmp_path):
@@ -130,18 +130,18 @@ def test_extract_pdf_filters_front_matter_but_keeps_abstract(tmp_path):
 
 
 def test_pdf_visual_word_salad_is_treated_as_noise():
-    assert looks_like_pdf_visual_word_salad(
+    assert _looks_like_pdf_visual_word_salad(
         "application perfect should never Law The just but will be be its -, "
         "The its , - be be perfect Law but just never should will application"
     )
-    assert not looks_like_pdf_visual_word_salad(
+    assert not _looks_like_pdf_visual_word_salad(
         "We used values of 2.8, 3.7, 6.0 and 9.5 TFLOPS for K80, K40, M40 and P100 respectively."
     )
-    assert not looks_like_pdf_visual_word_salad(
+    assert not _looks_like_pdf_visual_word_salad(
         "The encoder contains self-attention layers. In a self-attention layer all of the keys, values and queries come "
         "from the same place, in this case, the output of the previous layer in the encoder."
     )
-    assert not looks_like_pdf_visual_word_salad(
+    assert not _looks_like_pdf_visual_word_salad(
         "Similarly to other sequence transduction models, we use learned embeddings to convert the input tokens and output "
         "tokens to vectors of dimension d_model."
     )

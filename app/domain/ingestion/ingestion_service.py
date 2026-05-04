@@ -8,9 +8,8 @@ from pathlib import Path
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.ingestion.docx_extractor import extract_docx
 from app.domain.ingestion.embedding_service import embed_texts
-from app.domain.ingestion.pdf.extractor import extract_pdf
+from app.domain.ingestion.extractor import extract
 from app.domain.ingestion.segmentor import segment
 from app.models.source import SourceStatus
 from app.models.source_fragment import ElementType, SourceFragment
@@ -30,15 +29,6 @@ _TYPE_MAP = {
     "footnote": ElementType.FOOTNOTE,
     "formula": ElementType.FORMULA,
 }
-
-
-def _extract_source_file(file_path: str):
-    ext = Path(file_path).suffix.lower()
-    if ext == ".pdf":
-        return extract_pdf(file_path)
-    if ext == ".docx":
-        return extract_docx(file_path)
-    raise ValueError(f"Unsupported file type: {ext}")
 
 
 def _content_hash(content: str) -> str:
@@ -79,7 +69,7 @@ async def run_ingestion(source_id: uuid.UUID, db: AsyncSession) -> None:
         await repo.update_status(source_id, SourceStatus.PROCESSING)
 
         logger.info(f"[{source_id}] Extracting {source.storage_path}")
-        elements = _extract_source_file(source.storage_path)
+        elements = extract(source.storage_path)
         logger.info(f"[{source_id}] Extracted {len(elements)} elements")
 
         source_title = next(

@@ -82,7 +82,7 @@ async def test_ingestion_marks_source_failed_on_extractor_error(
     def boom(_path):
         raise RuntimeError("synthetic extract failure")
 
-    monkeypatch.setattr("app.domain.ingestion.ingestion_service._extract_source_file", boom)
+    monkeypatch.setattr("app.domain.ingestion.ingestion_service.extract", boom)
 
     async with session_factory() as db:
         await run_ingestion(source_id, db)
