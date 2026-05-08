@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+import re
 import uuid
+
+import fitz
+import pytest
 
 from app.domain.clustering.center_detector import (
     _cluster_orphan_buckets,
@@ -17,10 +22,17 @@ from app.models.source import SourceType
 from app.models.source_fragment import ElementType, SourceFragment
 from tests.helpers import (
     make_front_matter_pdf,
+    make_display_math_pdf,
     make_hyphenated_pdf,
+    make_image_caption_pdf,
+    make_inline_math_pdf,
     make_pdf,
+    make_references_and_footnotes_pdf,
     make_repeated_header_footer_pdf,
+    make_split_display_math_pdf,
+    make_table_caption_pdf,
     make_two_column_pdf,
+    make_unruled_text_table_pdf,
 )
 
 
@@ -127,6 +139,181 @@ def test_extract_pdf_filters_front_matter_but_keeps_abstract(tmp_path):
     assert "University of Somewhere" not in contents
     assert "Abstract" in contents
     assert any("transformer model architecture" in content for content in contents)
+
+
+def test_extract_pdf_table_has_display_metadata(tmp_path):
+    pdf = make_table_caption_pdf(tmp_path / "table-caption.pdf")
+
+    table = next(item for item in extract(str(pdf)) if item.element_type == "table")
+
+    assert table.meta_json is not None
+    assert table.meta_json["rows"][0] == ["Model", "BLEU"]
+    assert table.meta_json["markdown"].startswith("| Model | BLEU |")
+    assert table.meta_json["html"].startswith("<table>")
+    assert table.meta_json["table"]["extraction_method"] == "pymupdf_find_tables"
+    assert table.meta_json["table"]["display_mode"] == "grid"
+    assert table.meta_json["table"]["confidence"] >= 0.65
+    assert table.meta_json["table"]["bbox"]["width"] > 0
+    assert table.meta_json["table"]["reconstruction_method"] == "word_bbox_columns"
+    assert table.meta_json["table"]["display_rows"][0] == ["Model", "BLEU"]
+    assert table.meta_json["table"]["reconstructed_rows"][1] == ["Transformer", "28.4"]
+    assert "Model" in table.meta_json["table"]["plain_text"]
+    assert table.meta_json["table"]["text_lines"]
+
+
+def test_extract_pdf_caption_links_to_nearby_table(tmp_path):
+    pdf = make_table_caption_pdf(tmp_path / "table-caption.pdf")
+
+    elements = extract(str(pdf))
+    caption = next(item for item in elements if item.element_type == "caption")
+    table = next(item for item in elements if item.element_type == "table")
+
+    assert caption.meta_json is not None
+    assert table.meta_json is not None
+    assert caption.meta_json["caption_group_id"] == table.meta_json["caption_group_id"]
+    assert caption.meta_json["caption"]["target_kind"] == "table"
+    assert table.meta_json["caption"]["text"] == "Table 1: Scores by model."
+
+
+def test_extract_pdf_recovers_unruled_table_after_caption(tmp_path):
+    pdf = make_unruled_text_table_pdf(tmp_path / "unruled-table.pdf")
+
+    elements = extract(str(pdf))
+    table = next(item for item in elements if item.element_type == "table")
+
+    assert table.meta_json is not None
+    assert table.meta_json["table"]["extraction_method"] == "text_table_fallback"
+    assert table.meta_json["rows"][0] == ["Model", "BLEU", "Params"]
+    assert table.meta_json["rows"][1] == ["base", "25.8", "65"]
+    assert any("after the unruled table" in item.content for item in elements if item.element_type == "paragraph")
+
+
+def test_extract_pdf_inline_table_reference_is_not_caption(tmp_path):
+    pdf = make_pdf(tmp_path / "inline-table-reference.pdf")
+
+    doc = fitz.open(str(pdf))
+    page = doc[0]
+    page.insert_text((72, 260), "The result shown in Table 2 is discussed in prose.", fontsize=12)
+    doc.saveIncr()
+    doc.close()
+
+    paragraph = next(
+        item
+        for item in extract(str(pdf))
+        if "shown in Table 2" in item.content
+    )
+
+    assert paragraph.element_type == "paragraph"
+
+
+def test_extract_pdf_image_keeps_page_order_and_links_caption(tmp_path):
+    pdf = make_image_caption_pdf(tmp_path / "image-caption.pdf")
+
+    elements = extract(str(pdf))
+    image_index = next(index for index, item in enumerate(elements) if item.element_type == "image")
+    caption_index = next(index for index, item in enumerate(elements) if item.element_type == "caption")
+    image = elements[image_index]
+    caption = elements[caption_index]
+
+    assert image_index < caption_index
+    assert image.meta_json is not None
+    assert caption.meta_json is not None
+    assert image.meta_json["image"]["extraction_method"] == "pymupdf_extract_image"
+    assert image.meta_json["caption_group_id"] == caption.meta_json["caption_group_id"]
+    assert caption.meta_json["caption"]["target_kind"] == "image"
+
+
+def test_extract_pdf_marks_inline_math_without_creating_formula_block(tmp_path):
+    pdf = make_inline_math_pdf(tmp_path / "inline-math.pdf")
+
+    elements = extract(str(pdf))
+    paragraph = next(item for item in elements if "P_drop" in item.content)
+
+    assert paragraph.element_type == "paragraph"
+    assert not any(item.element_type == "formula" for item in elements)
+    assert paragraph.meta_json is not None
+    assert paragraph.meta_json["has_inline_math"] is True
+    assert paragraph.meta_json["math_spans"]
+    assert any(span["style"] == "math" for span in paragraph.inline_spans or [])
+
+
+def test_extract_pdf_keeps_standalone_math_as_inline_paragraph(tmp_path):
+    pdf = make_display_math_pdf(tmp_path / "display-math.pdf")
+
+    elements = extract(str(pdf))
+    expression = next(item for item in elements if "d_model" in item.content)
+
+    assert expression.element_type == "paragraph"
+    assert not any(item.element_type == "formula" for item in elements)
+    assert expression.meta_json is not None
+    assert "display_math" not in expression.meta_json
+    assert expression.meta_json["has_inline_math"] is True
+    assert expression.meta_json["math_spans"]
+
+
+def test_extract_pdf_merges_split_math_blocks_as_one_paragraph(tmp_path):
+    pdf = make_split_display_math_pdf(tmp_path / "split-display-math.pdf")
+
+    elements = extract(str(pdf))
+    expression = next(item for item in elements if "Attention(" in item.content)
+
+    assert expression.element_type == "paragraph"
+    assert "softmax( QK T sqrt d k ) V (1)" in expression.content
+    assert not any(item.content.startswith("sqrt d k") for item in elements)
+    assert expression.meta_json is not None
+    assert expression.meta_json["has_inline_math"] is True
+
+
+def test_extract_pdf_marks_footnotes_and_references_section(tmp_path):
+    pdf = make_references_and_footnotes_pdf(tmp_path / "references-footnotes.pdf")
+
+    elements = extract(str(pdf))
+    footnote = next(item for item in elements if item.content.startswith("* Equal"))
+    references = [item for item in elements if item.content.startswith("[")]
+
+    assert footnote.element_type == "footnote"
+    assert footnote.meta_json is not None
+    assert footnote.meta_json["footnote"] == {"marker": "*", "marker_style": "symbol"}
+    assert [item.content[:3] for item in references] == ["[1]", "[2]"]
+    assert all(item.meta_json and item.meta_json["references_section"] is True for item in references)
+
+
+def test_extract_attention_pdf_preserves_tables_formulas_and_visual_appendix():
+    pdf = Path("/Users/mir/Downloads/Attention Is All You Need.pdf")
+    if not pdf.exists():
+        pytest.skip("local Attention Is All You Need fixture is not available")
+
+    elements = extract(str(pdf))
+    contents = [item.content for item in elements]
+    tables = [item for item in elements if item.element_type == "table"]
+    images = [item for item in elements if item.element_type == "image"]
+
+    assert any("Attention( Q, K, V ) = softmax" in content and "√ d k ) V (1)" in content for content in contents)
+    assert not any(content.startswith("√ d k ) V") for content in contents)
+    assert any("Table 1: Maximum path lengths" in content for content in contents)
+    table_1 = next(table for table in tables if "Layer Type" in table.content)
+    assert "Self-Attention" in table_1.content
+    assert "Positional Encoding" not in table_1.content
+    assert table_1.meta_json and table_1.meta_json["table"]["snapshot_image_base64"]
+    assert any("Transformer (base model)" in table.content for table in tables)
+    assert any("Parser | Training | WSJ 23 F1" in table.content for table in tables)
+    reference_numbers = [
+        int(match.group(1))
+        for item in elements
+        if item.meta_json and item.meta_json.get("references_section") is True
+        if (match := re.match(r"^\[(\d+)\]", item.content.strip()))
+    ]
+    assert reference_numbers == list(range(1, 41))
+    table_group_ids = [
+        table.meta_json.get("caption_group_id")
+        for table in tables
+        if table.meta_json and table.meta_json.get("caption_group_id")
+    ]
+    assert len(table_group_ids) == len(set(table_group_ids))
+    assert sum("positional embedding instead of sinusoids" in table.content for table in tables) == 1
+    assert not any(table.content.startswith("N\nd model\nd ff") for table in tables)
+    assert any("Table 2 summarizes our results" in item.content and item.element_type == "paragraph" for item in elements)
+    assert sum(1 for image in images if image.meta_json and image.meta_json.get("visualization_snapshot")) == 3
 
 
 def test_pdf_visual_word_salad_is_treated_as_noise():

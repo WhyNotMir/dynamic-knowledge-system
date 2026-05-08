@@ -275,6 +275,72 @@ async def test_structure_agent_dedupes_duplicate_titles(monkeypatch):
     assert result[1]["proposed_title"] == "Attention Is All You Need: Abstract"
 
 
+async def test_structure_agent_dedupes_near_duplicate_titles(monkeypatch):
+    async def fake_title_llm(content: str, hint: str | None) -> str:
+        if hint == "1 Introduction":
+            return "The Transformer Model Architecture"
+        return "Transformer Model Architecture"
+
+    monkeypatch.setattr(
+        "app.agents.chains.structure_agent._propose_title_llm",
+        fake_title_llm,
+    )
+
+    candidates = [
+        {
+            "source_section_path": "1 Introduction",
+            "fragments": [SimpleNamespace(content="intro")],
+        },
+        {
+            "source_section_path": "3 Model Architecture",
+            "fragments": [SimpleNamespace(content="architecture")],
+        },
+    ]
+
+    result = await propose_structure(candidates)
+
+    assert result[0]["proposed_title"] == "The Transformer Model Architecture"
+    assert result[1]["proposed_title"] == "Transformer Model Architecture: Model Architecture"
+
+
+async def test_structure_agent_uses_llm_titles_for_pdf_candidates(monkeypatch):
+    async def fake_title_llm(content: str, hint: str | None) -> str:
+        if hint == "1 Introduction":
+            return "Opening Argument"
+        if hint == "3.2 Attention":
+            return "Mechanism Details"
+        return "Generated Title"
+
+    monkeypatch.setattr(
+        "app.agents.chains.structure_agent._propose_title_llm",
+        fake_title_llm,
+    )
+
+    candidates = [
+        {
+            "source_type": "pdf",
+            "source_section_path": "1 Introduction",
+            "fragments": [SimpleNamespace(content="intro body")],
+        },
+        {
+            "source_type": "pdf",
+            "source_section_path": "3.2 Attention",
+            "fragments": [SimpleNamespace(content="attention body")],
+        },
+    ]
+
+    result = await propose_structure(candidates)
+
+    assert [candidate["proposed_title"] for candidate in result] == [
+        "Opening Argument",
+        "Mechanism Details",
+    ]
+    assert [candidate["suggested_section"] for candidate in result] == [
+        "1 Introduction",
+        "3.2 Attention",
+    ]
+
+
 def test_pdf_group_path_uses_first_semantic_section_below_source_title():
     assert (
         _candidate_group_path(

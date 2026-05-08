@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.domain.articles.article_text import (
     is_meaningful_body_fragment,
-    looks_like_noise_text,
+    looks_like_noise_fragment,
     normalise_heading_text,
 )
 from app.models.article_candidate import ArticleCandidate
@@ -12,32 +12,33 @@ PreparedBlock = tuple[SourceFragment, dict]
 
 
 def prepare_article_blocks(candidate: ArticleCandidate) -> list[PreparedBlock]:
-    candidate_fragments = sorted(
-        candidate.candidate_fragments,
-        key=lambda item: item.position_index,
-    )
-    prepared_blocks: list[PreparedBlock] = []
+    """Materialise candidate fragments without recovery or reordering."""
     candidate_title_key = normalise_heading_text(candidate.title)
     source_heading_key = normalise_heading_text(candidate.source_section_path)
-    skipped_title_heading = False
+    fragments = [
+        item.fragment
+        for item in sorted(candidate.candidate_fragments, key=lambda item: item.position_index)
+        if item.fragment is not None
+    ]
 
-    for candidate_fragment in candidate_fragments:
-        fragment = candidate_fragment.fragment
-        if fragment is None:
+    prepared_blocks: list[PreparedBlock] = []
+    skipped_title_heading = False
+    seen_ids: set = set()
+
+    for fragment in sorted(fragments, key=lambda item: item.position_index):
+        if fragment.id in seen_ids:
             continue
-        if looks_like_noise_text(fragment.content):
+        seen_ids.add(fragment.id)
+        if looks_like_noise_fragment(fragment):
             continue
 
         if (
             not skipped_title_heading
             and fragment.element_type == ElementType.HEADING
-            and fragment.heading_level == 1
+            and (fragment.heading_level or 1) <= 1
         ):
-            fragment_heading_key = normalise_heading_text(fragment.content)
-            if fragment_heading_key and fragment_heading_key in {
-                candidate_title_key,
-                source_heading_key,
-            }:
+            heading_key = normalise_heading_text(fragment.content)
+            if heading_key and heading_key in {candidate_title_key, source_heading_key}:
                 skipped_title_heading = True
                 continue
 

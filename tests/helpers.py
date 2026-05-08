@@ -350,6 +350,161 @@ def make_table_pdf(path: Path) -> Path:
     return path
 
 
+def make_table_caption_pdf(path: Path) -> Path:
+    """Write a PDF where a caption sits directly above a ruled table."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Results", fontsize=20, fontname="helv")
+    page.insert_text((72, 118), "Table 1: Scores by model.", fontsize=11, fontname="Times-Italic")
+
+    x0, y0 = 72, 145
+    col_widths = [160, 160]
+    row_heights = [32, 32]
+    total_width = sum(col_widths)
+    total_height = sum(row_heights)
+
+    page.draw_rect(fitz.Rect(x0, y0, x0 + total_width, y0 + total_height), color=(0, 0, 0), width=1)
+    page.draw_line(
+        fitz.Point(x0 + col_widths[0], y0),
+        fitz.Point(x0 + col_widths[0], y0 + total_height),
+        color=(0, 0, 0),
+        width=1,
+    )
+    page.draw_line(
+        fitz.Point(x0, y0 + row_heights[0]),
+        fitz.Point(x0 + total_width, y0 + row_heights[0]),
+        color=(0, 0, 0),
+        width=1,
+    )
+    page.insert_text((x0 + 12, y0 + 20), "Model", fontsize=11, fontname="helv")
+    page.insert_text((x0 + col_widths[0] + 12, y0 + 20), "BLEU", fontsize=11, fontname="helv")
+    page.insert_text((x0 + 12, y0 + row_heights[0] + 20), "Transformer", fontsize=11, fontname="helv")
+    page.insert_text((x0 + col_widths[0] + 12, y0 + row_heights[0] + 20), "28.4", fontsize=11, fontname="helv")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_unruled_text_table_pdf(path: Path) -> Path:
+    """Write a PDF table-like region without drawn grid lines."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Results", fontsize=20, fontname="helv")
+    page.insert_text((72, 120), "Table 2: Translation quality.", fontsize=11, fontname="Times-Italic")
+    page.insert_text((72, 155), "Model BLEU Params", fontsize=11, fontname="helv")
+    page.insert_text((72, 175), "base 25.8 65", fontsize=11, fontname="helv")
+    page.insert_text((72, 195), "big 28.4 213", fontsize=11, fontname="helv")
+    page.insert_text((72, 240), "The paragraph after the unruled table should remain normal prose.", fontsize=12)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_image_caption_pdf(path: Path) -> Path:
+    """Write a PDF with a real embedded image followed by a caption."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Architecture", fontsize=20, fontname="helv")
+
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 160, 90), 0)
+    pix.clear_with(0x88CCFF)
+    image_rect = fitz.Rect(72, 130, 232, 220)
+    page.insert_image(image_rect, stream=pix.tobytes("png"))
+    page.insert_text((72, 245), "Figure 1: Encoder-decoder diagram.", fontsize=11, fontname="Times-Italic")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_inline_math_pdf(path: Path) -> Path:
+    """Write a PDF paragraph containing inline math symbols."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Optimizer", fontsize=20, fontname="helv")
+    page.insert_text(
+        (72, 130),
+        "We use P_drop = 0.1 during training and keep the original sentence intact.",
+        fontsize=12,
+        fontname="helv",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_display_math_pdf(path: Path) -> Path:
+    """Write a PDF with a standalone math-like expression block."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Optimizer", fontsize=20, fontname="helv")
+    page.insert_text((120, 150), "rate = d_model ** -0.5", fontsize=12, fontname="helv")
+    page.insert_text((72, 210), "The schedule uses this value during warmup.", fontsize=12, fontname="Times-Roman")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_split_display_math_pdf(path: Path) -> Path:
+    """Write a PDF where one display formula is split into two physical blocks."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "Scaled Dot-Product Attention", fontsize=20, fontname="helv")
+    page.insert_text(
+        (72, 130),
+        "We compute the matrix of outputs as:",
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+    page.insert_text(
+        (110, 170),
+        "Attention( Q, K, V ) = softmax( QK T",
+        fontsize=13,
+        fontname="Times-Italic",
+    )
+    page.insert_text(
+        (82, 205),
+        "sqrt d k ) V (1)",
+        fontsize=13,
+        fontname="Times-Italic",
+    )
+    page.insert_text(
+        (72, 255),
+        "The two most commonly used attention functions are additive attention and dot-product attention.",
+        fontsize=12,
+        fontname="Times-Roman",
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def make_references_and_footnotes_pdf(path: Path) -> Path:
+    """Write a PDF with symbol footnotes and a References section."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 80), "1 Training", fontsize=20, fontname="helv")
+    page.insert_text((72, 130), "* Equal contribution.", fontsize=11, fontname="Times-Roman")
+    page.insert_text((72, 180), "References", fontsize=18, fontname="helv")
+    page.insert_text((72, 230), "[1] First Author. First paper. 2020.", fontsize=11, fontname="Times-Roman")
+    page.insert_text((72, 255), "[2] Second Author. Second paper. 2021.", fontsize=11, fontname="Times-Roman")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(path)
+    doc.close()
+    return path
+
+
 def unique_docx(tmp_dir: Path) -> Path:
     return tmp_dir / f"{uuid.uuid4().hex}.docx"
 

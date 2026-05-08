@@ -17,6 +17,7 @@ produces the shape the UI expects:
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -27,6 +28,9 @@ from app.domain.articles.article_text import (
     is_meaningful_body_fragment,
     looks_like_noise_text,
 )
+from app.domain.articles.article_builder import build_articles_from_proposal
+from app.domain.articles.block_builder import has_meaningful_body, prepare_article_blocks
+from app.domain.articles.fidelity import audit_source_article_fidelity
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.alias import Alias
@@ -34,9 +38,12 @@ from app.models.article import Article, ArticleBlock
 from app.models.article_candidate import (
     ArticleCandidate,
     ArticleCandidateFragment,
+    CandidateStatus,
     ProposalStatus,
     StructureProposal,
 )
+from app.models.source import Source, SourceStatus, SourceType
+from app.models.source_fragment import ElementType, SourceFragment
 from app.models.graph_edge import EdgeKind, GraphEdge
 
 from tests.helpers import (
@@ -48,11 +55,519 @@ from tests.helpers import (
 )
 
 
+def test_production_code_has_no_attention_fixture_specific_markers():
+    production_roots = [
+        Path("app/domain"),
+        Path("app/agents"),
+    ]
+    forbidden_markers = [
+        "Attention Is All You Need",
+        "Transformer (base model)",
+        "GNMT",
+        "EN-DE",
+        "EN-FR",
+        "WSJ",
+        "Table 4",
+        "P100",
+    ]
+
+    offenders: list[str] = []
+    for root in production_roots:
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for marker in forbidden_markers:
+                if marker in text:
+                    offenders.append(f"{path}: {marker}")
+
+    assert offenders == []
+
+
 def test_builder_noise_filter_identifies_pdf_artifacts():
     assert looks_like_noise_text("2")
     assert looks_like_noise_text("<EOS>")
-    assert looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
+    assert looks_like_noise_text("arXiv:1706.03762")
+    assert looks_like_noise_text("Ashish Vaswani * Google Brain avaswani@google.com")
+    assert not looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
     assert not looks_like_noise_text("The transformer uses multi-head attention in three different ways.")
+
+
+def test_prepare_article_blocks_keeps_scientific_tables_and_wsJ_paragraphs():
+    source_id = uuid.uuid4()
+    table = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="GNMT + RL [38] 24.6 39.92 2 . 3 · 10 19 1 . 4 · 10 20",
+        element_type=ElementType.TABLE,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=8,
+        section_path="6 Results",
+        position_index=86,
+        inline_spans=None,
+        meta_json={"table": {"plain_text": "GNMT + RL [38] 24.6 39.92"}},
+        embedding=None,
+    )
+    paragraph = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content=(
+            "We trained a 4-layer transformer with d model = 1024 on the Wall "
+            "Street Journal (WSJ) portion of the Penn Treebank, about 40K "
+            "training sentences, and used a larger semi-supervised setting."
+        ),
+        element_type=ElementType.PARAGRAPH,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=9,
+        section_path="6.3 English Constituency Parsing",
+        position_index=106,
+        inline_spans=None,
+        meta_json=None,
+        embedding=None,
+    )
+    candidate = SimpleNamespace(
+        title="Results",
+        source_section_path="6 Results",
+        candidate_fragments=[
+            SimpleNamespace(position_index=0, fragment=table),
+            SimpleNamespace(position_index=1, fragment=paragraph),
+        ],
+    )
+
+    prepared = prepare_article_blocks(candidate)
+
+    assert [fragment.position_index for fragment, _ in prepared] == [86, 106]
+
+
+def test_prepare_article_blocks_treats_references_as_body_content():
+    source_id = uuid.uuid4()
+    reference = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="[10] Alex Graves. Generating sequences with recurrent neural networks. arXiv preprint arXiv:1308.0850, 2013.",
+        element_type=ElementType.FOOTNOTE,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=11,
+        section_path="References",
+        position_index=124,
+        inline_spans=None,
+        meta_json={"references_section": True},
+        embedding=None,
+    )
+    candidate = SimpleNamespace(
+        title="References",
+        source_section_path="References",
+        candidate_fragments=[SimpleNamespace(position_index=0, fragment=reference)],
+    )
+
+    prepared = prepare_article_blocks(candidate)
+
+    assert has_meaningful_body(prepared)
+    assert [fragment.position_index for fragment, _ in prepared] == [124]
+
+
+def test_prepare_article_blocks_moves_pdf_float_table_to_first_near_reference():
+    source_id = uuid.uuid4()
+    group_id = "caption-table-p8-100-100-0"
+    caption = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="Table 2: Translation quality and training cost.",
+        element_type=ElementType.CAPTION,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=8,
+        section_path="6 Results",
+        position_index=85,
+        inline_spans=None,
+        meta_json={"caption_group_id": group_id},
+        embedding=None,
+    )
+    table = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="Model | BLEU | Training Cost",
+        element_type=ElementType.TABLE,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=8,
+        section_path="6 Results",
+        position_index=86,
+        inline_spans=None,
+        meta_json={"caption_group_id": group_id, "table": {"display_mode": "preformatted"}},
+        embedding=None,
+    )
+    heading = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="6.1 Machine Translation",
+        element_type=ElementType.HEADING,
+        heading_level=2,
+        list_level=None,
+        group_id=None,
+        page_number=8,
+        section_path="6 Results",
+        position_index=90,
+        inline_spans=None,
+        meta_json=None,
+        embedding=None,
+    )
+    paragraph = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="Table 2 summarizes our results and compares translation quality.",
+        element_type=ElementType.PARAGRAPH,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=8,
+        section_path="6 Results > 6.1 Machine Translation",
+        position_index=91,
+        inline_spans=None,
+        meta_json=None,
+        embedding=None,
+    )
+    candidate = SimpleNamespace(
+        title="Results",
+        source_section_path="6 Results",
+        candidate_fragments=[
+            SimpleNamespace(position_index=0, fragment=caption),
+            SimpleNamespace(position_index=1, fragment=table),
+            SimpleNamespace(position_index=2, fragment=heading),
+            SimpleNamespace(position_index=3, fragment=paragraph),
+        ],
+    )
+
+    prepared = prepare_article_blocks(candidate)
+
+    assert [fragment.position_index for fragment, _ in prepared] == [90, 91, 85, 86]
+
+
+async def test_fidelity_audit_reports_missing_meaningful_fragments(
+    project, session_factory
+):
+    source_id = uuid.uuid4()
+    kept_id = uuid.uuid4()
+    missing_id = uuid.uuid4()
+
+    async with session_factory() as db:
+        source = Source(
+            id=source_id,
+            project_id=uuid.UUID(project["id"]),
+            filename="attention.pdf",
+            title="Attention Is All You Need",
+            source_type=SourceType.PDF,
+            storage_path="/tmp/attention.pdf",
+            status=SourceStatus.DONE,
+        )
+        kept = SourceFragment(
+            id=kept_id,
+            source_id=source_id,
+            content="A paragraph represented in an article.",
+            element_type=ElementType.PARAGRAPH,
+            position_index=1,
+            page_number=1,
+        )
+        missing_table = SourceFragment(
+            id=missing_id,
+            source_id=source_id,
+            content="Transformer (base model) 27.3 38.1 3.3 · 10 18",
+            element_type=ElementType.TABLE,
+            position_index=2,
+            page_number=8,
+        )
+        article = Article(
+            project_id=uuid.UUID(project["id"]),
+            title="Results",
+            slug="results",
+        )
+        db.add_all([source, kept, missing_table, article])
+        await db.flush()
+        db.add(
+            ArticleBlock(
+                article_id=article.id,
+                fragment_id=kept_id,
+                content=kept.content,
+                element_type=kept.element_type,
+                position_index=0,
+                source_position_index=kept.position_index,
+                page_number=kept.page_number,
+            )
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        report = await audit_source_article_fidelity(
+            source_id=source_id,
+            project_id=uuid.UUID(project["id"]),
+            db=db,
+        )
+
+    assert report.meaningful_fragment_count == 2
+    assert report.covered_fragment_count == 1
+    assert report.missing_fragment_ids == [missing_id]
+    assert report.issues[0].code == "missing_fragment"
+
+
+async def test_builder_recovers_referenced_table_caption_group(
+    project, session_factory, monkeypatch
+):
+    async def fake_metadata(**kwargs):
+        candidate = kwargs["candidate"]
+        return SimpleNamespace(
+            title=candidate.title,
+            description="Recovered table article.",
+            suggested_structural_block=None,
+        )
+
+    monkeypatch.setattr(
+        "app.domain.articles.article_builder.enrich_or_fallback_candidate_metadata",
+        fake_metadata,
+    )
+
+    project_id = uuid.UUID(project["id"])
+    source_id = uuid.uuid4()
+    group_id = "caption-table-4"
+
+    async with session_factory() as db:
+        source = Source(
+            id=source_id,
+            project_id=project_id,
+            filename="attention.pdf",
+            title="Attention Is All You Need",
+            source_type=SourceType.PDF,
+            storage_path="/tmp/attention.pdf",
+            status=SourceStatus.DONE,
+        )
+        body = SourceFragment(
+            source_id=source_id,
+            content=(
+                "Our results in Table 4 show that despite the lack of task-specific "
+                "tuning the Transformer performs surprisingly well on parsing."
+            ),
+            element_type=ElementType.PARAGRAPH,
+            position_index=10,
+            page_number=10,
+            section_path="6.3 English Constituency Parsing",
+        )
+        caption = SourceFragment(
+            source_id=source_id,
+            content="Table 4: The Transformer generalizes well to English constituency parsing.",
+            element_type=ElementType.CAPTION,
+            position_index=11,
+            page_number=10,
+            section_path="6.3 English Constituency Parsing",
+            meta_json={"caption_group_id": group_id},
+        )
+        table = SourceFragment(
+            source_id=source_id,
+            content="Parser | Training | WSJ 23 F1\nTransformer (4 layers) | semi-supervised | 92.7",
+            element_type=ElementType.TABLE,
+            position_index=12,
+            page_number=10,
+            section_path="6.3 English Constituency Parsing",
+            meta_json={"caption_group_id": group_id},
+        )
+        proposal = StructureProposal(project_id=project_id, status=ProposalStatus.READY)
+        db.add_all([source, body, caption, table, proposal])
+        await db.flush()
+        candidate = ArticleCandidate(
+            proposal_id=proposal.id,
+            title="English Constituency Parsing",
+            source_section_path="6.3 English Constituency Parsing",
+            status=CandidateStatus.CONFIRMED,
+        )
+        db.add(candidate)
+        await db.flush()
+        db.add(
+            ArticleCandidateFragment(
+                candidate_id=candidate.id,
+                fragment_id=body.id,
+                position_index=0,
+            )
+        )
+        await db.flush()
+
+        article_ids = await build_articles_from_proposal(proposal, db)
+        await db.commit()
+
+    assert len(article_ids) == 1
+    async with session_factory() as db:
+        blocks = (
+            await db.execute(
+                select(ArticleBlock)
+                .where(ArticleBlock.article_id == article_ids[0])
+                .order_by(ArticleBlock.source_position_index)
+            )
+        ).scalars().all()
+
+    assert [block.element_type for block in blocks] == [
+        ElementType.PARAGRAPH,
+        ElementType.CAPTION,
+        ElementType.TABLE,
+    ]
+
+
+async def test_builder_does_not_duplicate_distant_referenced_table(
+    project, session_factory, monkeypatch
+):
+    async def fake_metadata(**kwargs):
+        candidate = kwargs["candidate"]
+        return SimpleNamespace(
+            title=candidate.title,
+            description="Table duplication check.",
+            suggested_structural_block=None,
+        )
+
+    monkeypatch.setattr(
+        "app.domain.articles.article_builder.enrich_or_fallback_candidate_metadata",
+        fake_metadata,
+    )
+
+    project_id = uuid.UUID(project["id"])
+    source_id = uuid.uuid4()
+    group_id = "caption-table-results"
+
+    async with session_factory() as db:
+        source = Source(
+            id=source_id,
+            project_id=project_id,
+            filename="generic.pdf",
+            title="Generic Research Report",
+            source_type=SourceType.PDF,
+            storage_path="/tmp/generic.pdf",
+            status=SourceStatus.DONE,
+        )
+        distant_ref = SourceFragment(
+            source_id=source_id,
+            content="Earlier context mentions Table 4 as related background evidence.",
+            element_type=ElementType.PARAGRAPH,
+            position_index=1,
+            page_number=1,
+            section_path="1 Background",
+        )
+        owner_body = SourceFragment(
+            source_id=source_id,
+            content="The local results in Table 4 provide the full comparison.",
+            element_type=ElementType.PARAGRAPH,
+            position_index=40,
+            page_number=6,
+            section_path="6 Results",
+        )
+        caption = SourceFragment(
+            source_id=source_id,
+            content="Table 4: Full comparison.",
+            element_type=ElementType.CAPTION,
+            position_index=41,
+            page_number=6,
+            section_path="6 Results",
+            meta_json={"caption_group_id": group_id},
+        )
+        table = SourceFragment(
+            source_id=source_id,
+            content="System | Score\nBase | 90",
+            element_type=ElementType.TABLE,
+            position_index=42,
+            page_number=6,
+            section_path="6 Results",
+            meta_json={"caption_group_id": group_id},
+        )
+        unrelated_caption = SourceFragment(
+            source_id=source_id,
+            content="Table 9: Unrelated appendix data.",
+            element_type=ElementType.CAPTION,
+            position_index=80,
+            page_number=12,
+            section_path="Appendix",
+            meta_json={"caption_group_id": group_id},
+        )
+        unrelated_table = SourceFragment(
+            source_id=source_id,
+            content="Other | Value\nFar | 1",
+            element_type=ElementType.TABLE,
+            position_index=81,
+            page_number=12,
+            section_path="Appendix",
+            meta_json={"caption_group_id": group_id},
+        )
+        proposal = StructureProposal(project_id=project_id, status=ProposalStatus.READY)
+        db.add_all(
+            [
+                source,
+                distant_ref,
+                owner_body,
+                caption,
+                table,
+                unrelated_caption,
+                unrelated_table,
+                proposal,
+            ]
+        )
+        await db.flush()
+
+        distant_candidate = ArticleCandidate(
+            proposal_id=proposal.id,
+            title="Background",
+            source_section_path="1 Background",
+            status=CandidateStatus.CONFIRMED,
+        )
+        owner_candidate = ArticleCandidate(
+            proposal_id=proposal.id,
+            title="Results",
+            source_section_path="6 Results",
+            status=CandidateStatus.CONFIRMED,
+        )
+        db.add_all([distant_candidate, owner_candidate])
+        await db.flush()
+        db.add_all(
+            [
+                ArticleCandidateFragment(
+                    candidate_id=distant_candidate.id,
+                    fragment_id=distant_ref.id,
+                    position_index=0,
+                ),
+                ArticleCandidateFragment(
+                    candidate_id=owner_candidate.id,
+                    fragment_id=owner_body.id,
+                    position_index=0,
+                ),
+            ]
+        )
+        await db.flush()
+
+        article_ids = await build_articles_from_proposal(proposal, db)
+        await db.commit()
+
+    assert len(article_ids) == 2
+    async with session_factory() as db:
+        articles = (
+            await db.execute(
+                select(Article)
+                .where(Article.id.in_(article_ids))
+                .options(selectinload(Article.blocks))
+            )
+        ).scalars().all()
+
+    by_title = {article.title: article for article in articles}
+    assert [block.element_type for block in by_title["Background"].blocks] == [
+        ElementType.PARAGRAPH
+    ]
+    assert sorted(block.element_type.value for block in by_title["Results"].blocks) == [
+        ElementType.CAPTION.value,
+        ElementType.PARAGRAPH.value,
+        ElementType.TABLE.value,
+    ]
+    assert all(
+        "Unrelated appendix data" not in block.content
+        and "Other | Value" not in block.content
+        for block in by_title["Results"].blocks
+    )
 
 
 def test_fallback_description_uses_more_than_opening_line():

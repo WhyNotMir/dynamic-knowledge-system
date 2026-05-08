@@ -69,7 +69,7 @@ function renderStyledText(
   segmentStart = 0
 ) {
   if (!inlineSpans || inlineSpans.length === 0) {
-    return content;
+    return normalizeDisplayText(content);
   }
 
   const relevant = inlineSpans
@@ -79,38 +79,73 @@ function renderStyledText(
       start: Math.max(span.start - segmentStart, 0),
       end: Math.min(span.end - segmentStart, content.length),
     }))
-    .sort((a, b) => a.start - b.start || a.end - b.end);
+    .filter((span) => span.end > span.start)
+    .sort((a, b) => a.start - b.start || spanPriority(b.style) - spanPriority(a.style));
 
   if (relevant.length === 0) {
-    return content;
+    return normalizeDisplayText(content);
   }
 
+  const boundaries = new Set<number>([0, content.length]);
+  for (const span of relevant) {
+    boundaries.add(span.start);
+    boundaries.add(span.end);
+  }
+
+  const points = Array.from(boundaries).sort((a, b) => a - b);
   const parts: React.ReactNode[] = [];
-  let cursor = 0;
 
-  for (const [index, span] of relevant.entries()) {
-    if (span.start > cursor) {
-      parts.push(<span key={`text-${segmentStart}-${index}-${cursor}`}>{content.slice(cursor, span.start)}</span>);
-    }
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    if (end <= start) continue;
 
-    const text = content.slice(span.start, span.end);
-    let node: React.ReactNode = text;
-    if (span.style === "bold") {
-      node = <strong>{text}</strong>;
-    } else if (span.style === "italic") {
-      node = <em>{text}</em>;
-    } else if (span.style === "code") {
-      node = <code className="rounded bg-vault-surface px-1 py-0.5 text-[0.95em]">{text}</code>;
-    }
-    parts.push(<span key={`span-${segmentStart}-${index}-${span.start}`}>{node}</span>);
-    cursor = Math.max(cursor, span.end);
-  }
-
-  if (cursor < content.length) {
-    parts.push(<span key={`tail-${segmentStart}-${cursor}`}>{content.slice(cursor)}</span>);
+    const text = content.slice(start, end);
+    const activeStyles = relevant
+      .filter((span) => span.start <= start && span.end >= end)
+      .map((span) => span.style);
+    parts.push(
+      <span key={`chunk-${segmentStart}-${start}-${end}`}>
+        {renderStyledChunk(text, activeStyles)}
+      </span>
+    );
   }
 
   return parts;
+}
+
+function normalizeDisplayText(text: string) {
+  return text
+    .replace(/\s+([,.;:!?%)\]\}])/g, "$1")
+    .replace(/([(\[\{])\s+/g, "$1")
+    .replace(/\s{2,}/g, " ");
+}
+
+function spanPriority(style: string) {
+  if (style === "math") return 4;
+  if (style === "code") return 3;
+  if (style === "bold") return 2;
+  if (style === "italic") return 1;
+  return 0;
+}
+
+function renderStyledChunk(text: string, styles: string[]) {
+  const uniqueStyles = Array.from(new Set(styles)).sort((a, b) => spanPriority(a) - spanPriority(b));
+  let node: React.ReactNode = uniqueStyles.includes("code") ? text : normalizeDisplayText(text);
+
+  for (const style of uniqueStyles) {
+    if (style === "bold") {
+      node = <strong>{node}</strong>;
+    } else if (style === "italic") {
+      node = <em>{node}</em>;
+    } else if (style === "code") {
+      node = <code className="rounded bg-vault-surface px-1 py-0.5 text-[0.95em]">{node}</code>;
+    } else if (style === "math") {
+      node = <span className="font-serif italic text-current">{node}</span>;
+    }
+  }
+
+  return node;
 }
 
 function getScrollParent(element: HTMLElement | null): HTMLElement | Window {
@@ -130,18 +165,25 @@ function getScrollParent(element: HTMLElement | null): HTMLElement | Window {
 }
 
 function extractTableRows(block: ArticleBlock) {
+  const tableMeta = getTableMeta(block);
+  const metaRows = tableMeta?.rows;
+  if (Array.isArray(metaRows)) {
+    const rows = normalizeTableRows(metaRows);
+    if (rows.length > 0) return rows;
+  }
+
   const rawRows = block.meta_json?.rows;
   if (Array.isArray(rawRows)) {
-    const structuredRows = rawRows
-      .map((row) =>
-        Array.isArray(row)
-          ? row.map((cell) => String(cell ?? "").trim())
-          : []
-      )
-      .filter((row) => row.some((cell) => cell.length > 0));
+    const structuredRows = normalizeTableRows(rawRows);
     if (structuredRows.length > 0) {
       return structuredRows;
     }
+  }
+
+  const displayRows = tableMeta?.display_rows;
+  if (Array.isArray(displayRows)) {
+    const rows = normalizeTableRows(displayRows);
+    if (rows.length > 0) return rows;
   }
 
   return block.content
@@ -150,11 +192,59 @@ function extractTableRows(block: ArticleBlock) {
     .filter((row) => row.length > 0);
 }
 
+function normalizeTableRows(rows: unknown[]) {
+  return rows
+    .map((row) =>
+      Array.isArray(row)
+        ? row.map((cell) => normalizeDisplayText(String(cell ?? "").trim()))
+        : []
+    )
+    .filter((row) => row.some((cell) => cell.length > 0));
+}
+
+function tableRowsLookRenderable(rows: string[][]) {
+  if (rows.length < 2) return false;
+  const columnCounts = rows.map((row) => row.length);
+  const maxColumns = Math.max(...columnCounts);
+  const multiColumnRows = columnCounts.filter((count) => count >= 2).length;
+  return maxColumns >= 2 && multiColumnRows >= Math.min(3, rows.length);
+}
+
 function renderTable(block: ArticleBlock) {
   const rows = extractTableRows(block);
+  const caption = getLinkedCaptionText(block);
+  const tableMeta = getTableMeta(block);
+  const plainText = typeof tableMeta?.plain_text === "string" ? tableMeta.plain_text.trim() : "";
+  const mode = typeof tableMeta?.mode === "string" ? tableMeta.mode : "structured";
+  const snapshotImage = typeof tableMeta?.snapshot_image_base64 === "string" ? tableMeta.snapshot_image_base64 : "";
+  const snapshotExt = typeof tableMeta?.snapshot_ext === "string" ? tableMeta.snapshot_ext : "png";
 
-  if (rows.length === 0) {
-    return <p className="text-vault-text leading-relaxed text-[15px]">{block.content}</p>;
+  if (snapshotImage && mode === "snapshot") {
+    return (
+      <figure className="space-y-3">
+        {caption && <figcaption className="text-sm italic text-vault-muted leading-relaxed">{caption}</figcaption>}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={`data:image/${snapshotExt};base64,${snapshotImage}`}
+          alt={caption || "Source table"}
+          className="max-w-full rounded-xl border border-vault-border bg-white"
+        />
+      </figure>
+    );
+  }
+
+  if (mode === "preformatted" || rows.length === 0 || !tableRowsLookRenderable(rows)) {
+    if (!plainText && !block.content.trim()) {
+      return null;
+    }
+    return (
+      <figure className="space-y-3">
+        {caption && <figcaption className="text-sm italic text-vault-muted leading-relaxed">{caption}</figcaption>}
+        <pre className="overflow-x-auto rounded-xl border border-vault-border bg-vault-surface px-4 py-3 font-mono text-sm leading-7 text-vault-text">
+          {plainText || block.content}
+        </pre>
+      </figure>
+    );
   }
 
   const maxColumns = Math.max(...rows.map((row) => row.length), 0);
@@ -162,55 +252,73 @@ function renderTable(block: ArticleBlock) {
   const hasHeader = rows.length > 1;
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-vault-border bg-vault-surface shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
-      <table className="min-w-full text-sm">
-        {hasHeader && (
-          <thead className="border-b border-vault-border bg-vault-bg/70">
-            <tr>
-              {Array.from({ length: maxColumns }).map((_, cellIndex) => (
-                <th
-                  key={cellIndex}
-                  className="px-3 py-2 text-left text-[11px] font-mono uppercase tracking-[0.16em] text-vault-gold/80 align-top"
-                >
-                  {header[cellIndex] ?? ""}
-                </th>
-              ))}
-            </tr>
-          </thead>
-        )}
-        <tbody>
-          {(hasHeader ? bodyRows : rows).map((row, rowIndex) => (
-            <tr
-              key={`${rowIndex}-${row.join("-")}`}
-              className="border-b last:border-b-0 border-vault-border/80 odd:bg-white/[0.01]"
-            >
-              {Array.from({ length: maxColumns }).map((_, cellIndex) => {
-                const cell = row[cellIndex] ?? "";
-                return (
-                  <td
-                    key={`${rowIndex}-${cellIndex}`}
-                    className="px-3 py-2.5 text-vault-text align-top leading-6"
+    <figure className="space-y-3">
+      {caption && <figcaption className="text-sm italic text-vault-muted leading-relaxed">{caption}</figcaption>}
+      <div className="overflow-x-auto rounded-xl border border-vault-border bg-vault-surface shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+        <table className="min-w-full text-sm">
+          {hasHeader && (
+            <thead className="border-b border-vault-border bg-vault-bg/70">
+              <tr>
+                {Array.from({ length: maxColumns }).map((_, cellIndex) => (
+                  <th
+                    key={cellIndex}
+                    className="px-3 py-2 text-left text-[11px] font-mono uppercase tracking-[0.16em] text-vault-gold/80 align-top"
                   >
-                    {cell}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+                    {header[cellIndex] ?? ""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          )}
+          <tbody>
+            {(hasHeader ? bodyRows : rows).map((row, rowIndex) => (
+              <tr
+                key={`${rowIndex}-${row.join("-")}`}
+                className="border-b last:border-b-0 border-vault-border/80 odd:bg-white/[0.01]"
+              >
+                {Array.from({ length: maxColumns }).map((_, cellIndex) => {
+                  const cell = row[cellIndex] ?? "";
+                  return (
+                    <td
+                      key={`${rowIndex}-${cellIndex}`}
+                      className="px-3 py-2.5 text-vault-text align-top leading-6"
+                    >
+                      {cell}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </figure>
   );
 }
 
-function renderFormula(content: string) {
-  return (
-    <div className="overflow-x-auto rounded-lg border border-vault-border bg-vault-surface/80 px-4 py-3">
-      <code className="block whitespace-pre-wrap text-[1.05rem] leading-8 text-vault-text">
-        {content}
-      </code>
-    </div>
-  );
+function getCaptionGroupId(block: ArticleBlock) {
+  return typeof block.meta_json?.caption_group_id === "string" ? block.meta_json.caption_group_id : null;
+}
+
+function getTableMeta(block: ArticleBlock) {
+  const table = block.meta_json?.table;
+  if (!table || typeof table !== "object" || Array.isArray(table)) {
+    return null;
+  }
+  return table as Record<string, unknown>;
+}
+
+function getLinkedCaptionText(block: ArticleBlock) {
+  const caption = block.meta_json?.caption;
+  if (!caption || typeof caption !== "object" || Array.isArray(caption)) {
+    return null;
+  }
+  const text = (caption as { text?: unknown }).text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
+function hasRenderableCaptionTarget(block: ArticleBlock) {
+  return (block.element_type === "image" || block.element_type === "table") && Boolean(getLinkedCaptionText(block));
 }
 
 function renderInlineContent(block: ArticleBlock, projectId: string) {
@@ -283,7 +391,6 @@ function Block({
   const isQuote = block.element_type === "quote";
   const isImage = block.element_type === "image";
   const isFootnote = block.element_type === "footnote";
-  const isFormula = block.element_type === "formula";
   const headingDepth = block.heading_depth ?? 1;
   const headingLabel = block.heading_label ?? block.content;
 
@@ -344,8 +451,6 @@ function Block({
         {block.content}
       </p>
     );
-  } else if (isFormula) {
-    body = renderFormula(block.content);
   } else if (isQuote) {
     body = (
           <blockquote className="border-l-2 border-vault-gold/60 pl-4 text-vault-text italic leading-relaxed">
@@ -357,14 +462,16 @@ function Block({
     );
   } else if (isImage) {
     const imageRef = typeof block.meta_json?.image_ref === "string" ? block.meta_json.image_ref : null;
+    const caption = getLinkedCaptionText(block);
     body = imageRef ? (
-      <figure className="rounded-xl border border-vault-border bg-vault-surface p-4">
+      <figure className="space-y-3 rounded-xl border border-vault-border bg-vault-surface p-4">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={`${API_BASE}${imageRef}`}
           alt={typeof block.meta_json?.alt === "string" ? block.meta_json.alt : "Source image"}
           className="mx-auto max-h-[720px] w-auto max-w-full rounded-lg object-contain bg-white"
         />
+        {caption && <figcaption className="text-sm italic text-vault-muted leading-relaxed">{caption}</figcaption>}
       </figure>
     ) : (
       <p className="text-vault-muted text-sm">Image asset unavailable.</p>
@@ -372,7 +479,7 @@ function Block({
   } else if (isFootnote) {
     body = (
       <p className="text-sm text-vault-muted leading-relaxed border-l border-vault-border pl-3">
-        {renderInlineContent(block, projectId)}
+        {normalizeDisplayText(block.content)}
       </p>
     );
   } else {
@@ -420,10 +527,20 @@ export default function ArticlePage() {
     queryFn: () => api.articles.get(projectId, articleId),
   });
 
-  const visibleBlocks = useMemo(
-    () => article?.blocks.filter((block) => !block.is_noise) ?? [],
-    [article]
-  );
+  const visibleBlocks = useMemo(() => {
+    const blocks = article?.blocks.filter((block) => !block.is_noise) ?? [];
+    const renderableCaptionGroups = new Set(
+      blocks
+        .filter(hasRenderableCaptionTarget)
+        .map(getCaptionGroupId)
+        .filter((groupId): groupId is string => Boolean(groupId))
+    );
+    return blocks.filter(
+      (block) =>
+        block.element_type !== "caption" ||
+        !renderableCaptionGroups.has(getCaptionGroupId(block) ?? "")
+    );
+  }, [article]);
 
   const displayBlockCount = useMemo(
     () => visibleBlocks.filter((block) => block.element_type !== "heading").length,

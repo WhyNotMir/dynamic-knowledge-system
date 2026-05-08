@@ -60,8 +60,8 @@ def looks_like_noise_fragment(fragment) -> bool:
 
     Some PDF artifacts look noisy as raw text, but are meaningful once their
     element type is known. Tables, references, captions, formulas, and long
-    prose must not pass through the same text-only filter as page headers,
-    footers, author contacts, or OCR residue.
+    scientific prose must not pass through the same text-only filter as page
+    headers, footers, author contacts, or OCR residue.
     """
     if fragment is None:
         return True
@@ -96,13 +96,13 @@ def looks_like_noise_fragment(fragment) -> bool:
         if re.match(r"^\[\d+\]\s+", stripped):
             return False
 
-    if value == ElementType.PARAGRAPH.value and _looks_like_long_prose_sentence(stripped):
+    if value == ElementType.PARAGRAPH.value and _looks_like_scientific_sentence(stripped):
         return False
 
     return looks_like_noise_text(stripped)
 
 
-def _looks_like_long_prose_sentence(value: str) -> bool:
+def _looks_like_scientific_sentence(value: str) -> bool:
     """Return True for long prose even if it mentions PDF/table markers."""
     if len(value) < 80:
         return False

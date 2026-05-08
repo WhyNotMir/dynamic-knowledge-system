@@ -104,7 +104,7 @@ def is_noise_block(block: ArticleBlock) -> bool:
         return not looks_like_real_heading(stripped)
 
     lowered = stripped.lower()
-    if block.element_type == ElementType.PARAGRAPH and _looks_like_long_prose_sentence(stripped):
+    if block.element_type == ElementType.PARAGRAPH and _looks_like_scientific_sentence(stripped):
         return False
     if lowered in {"<eos>", "eos"}:
         return True
@@ -117,7 +117,7 @@ def is_noise_block(block: ArticleBlock) -> bool:
     return False
 
 
-def _looks_like_long_prose_sentence(value: str) -> bool:
+def _looks_like_scientific_sentence(value: str) -> bool:
     if len(value) < 80:
         return False
     words = re.findall(r"[A-Za-z][A-Za-z-]+", value)

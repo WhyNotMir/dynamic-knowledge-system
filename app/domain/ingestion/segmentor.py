@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 import uuid
 
 from app.domain.ingestion.extractor import ExtractedElement
 
-MIN_CHARS = 180    # short paragraphs are merged with neighbors to reduce choppy one-liners
-MAX_MERGE = 1200   # never merge beyond this total length
+
+MAX_PARAGRAPH_MERGE = 900
+SHORT_PARAGRAPH = 120
 
 
 @dataclass
@@ -22,6 +24,106 @@ class FragmentData:
     meta_json: dict | None = None
 
 
+def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
+    """Conservative source-preserving segmenter.
+
+    The extractor owns source structure. The segmenter may only normalize tiny
+    layout artifacts and must not create semantic groupings. In particular,
+    headings, list items, captions, tables, images, formulas, and references
+    stay as standalone fragments.
+    """
+    fragments: list[FragmentData] = []
+
+    for element in elements:
+        content = _normalise_element_content(element)
+        if not content:
+            continue
+
+        if _can_merge_with_previous(fragments[-1] if fragments else None, element, content):
+            previous = fragments[-1]
+            separator_len = 1
+            fragments[-1] = FragmentData(
+                content=f"{previous.content} {content}",
+                element_type="paragraph",
+                page_number=previous.page_number,
+                section_path=previous.section_path,
+                position_index=previous.position_index,
+                heading_level=None,
+                list_level=None,
+                group_id=previous.group_id,
+                inline_spans=_merge_inline_spans(
+                    previous.content,
+                    previous.inline_spans,
+                    element.inline_spans,
+                    separator_len=separator_len,
+                ),
+                meta_json=_merge_pdf_meta(previous.meta_json, element.meta_json),
+            )
+            continue
+
+        fragments.append(
+            FragmentData(
+                content=content,
+                element_type=element.element_type,
+                page_number=element.page_number,
+                section_path=element.section_path,
+                position_index=element.position_index,
+                heading_level=element.heading_level,
+                list_level=element.list_level,
+                group_id=None,
+                inline_spans=element.inline_spans,
+                meta_json=element.meta_json,
+            )
+        )
+
+    return fragments
+
+
+def _can_merge_with_previous(
+    previous: FragmentData | None,
+    element: ExtractedElement,
+    content: str,
+) -> bool:
+    if previous is None:
+        return False
+    if previous.element_type != "paragraph" or element.element_type != "paragraph":
+        return False
+    if previous.section_path != element.section_path:
+        return False
+    if previous.page_number != element.page_number:
+        return False
+    if len(previous.content) + len(content) > MAX_PARAGRAPH_MERGE:
+        return False
+    if (
+        (_is_pdf_meta(previous.meta_json) or _is_pdf_meta(element.meta_json))
+        and _looks_like_standalone_title(previous.content)
+    ):
+        return False
+    if (
+        (_is_pdf_meta(previous.meta_json) or _is_pdf_meta(element.meta_json))
+        and previous.content.endswith((".", "?", "!", ":"))
+    ):
+        return False
+    return len(previous.content) < SHORT_PARAGRAPH or len(content) < SHORT_PARAGRAPH
+
+
+def _normalise_element_content(element: ExtractedElement) -> str:
+    content = element.content or ""
+    if element.element_type == "table":
+        lines = [" ".join(line.split()).strip() for line in content.splitlines()]
+        return "\n".join(line for line in lines if line)
+    return " ".join(content.split()).strip()
+
+
+def _looks_like_standalone_title(value: str) -> bool:
+    stripped = value.strip()
+    if len(stripped) > 160:
+        return False
+    if stripped.endswith((".", "?", "!")):
+        return False
+    return any(char.isalpha() for char in stripped)
+
+
 def _merge_inline_spans(
     left_content: str,
     left_spans: list[dict] | None,
@@ -30,149 +132,28 @@ def _merge_inline_spans(
     separator_len: int,
 ) -> list[dict] | None:
     merged: list[dict] = [dict(span) for span in left_spans or []]
-    if right_spans:
-        offset = len(left_content) + separator_len
-        for span in right_spans:
-            shifted = dict(span)
-            shifted["start"] = shifted["start"] + offset
-            shifted["end"] = shifted["end"] + offset
-            merged.append(shifted)
+    offset = len(left_content) + separator_len
+    for span in right_spans or []:
+        shifted = dict(span)
+        shifted["start"] = shifted["start"] + offset
+        shifted["end"] = shifted["end"] + offset
+        merged.append(shifted)
     return merged or None
 
 
-def _is_pdf_raw_meta(meta_json: dict | None) -> bool:
-    if not meta_json:
-        return True
-    return set(meta_json.keys()) <= {"pdf", "pdf_blocks"}
-
-
-def _collect_pdf_blocks(meta_json: dict | None) -> list[dict]:
-    if not meta_json:
-        return []
-    if isinstance(meta_json.get("pdf_blocks"), list):
-        return [dict(item) for item in meta_json["pdf_blocks"]]
-    if isinstance(meta_json.get("pdf"), dict):
-        return [dict(meta_json["pdf"])]
-    return []
-
-
-def _merge_meta_json(left: dict | None, right: dict | None) -> dict | None:
-    if not left and not right:
-        return None
-    if _is_pdf_raw_meta(left) and _is_pdf_raw_meta(right):
-        blocks = _collect_pdf_blocks(left) + _collect_pdf_blocks(right)
-        return {"pdf_blocks": blocks} if blocks else None
-    return None
-
-
-def segment(elements: list[ExtractedElement]) -> list[FragmentData]:
-    """
-    Rules:
-    - Headings, tables, captions → always their own fragment.
-    - Consecutive list items in the same section → merged into one fragment.
-    - Short paragraphs in the same section → merged into the previous paragraph
-      if the result stays under MAX_MERGE.
-    - Empty fragments are dropped.
-    """
-    fragments: list[FragmentData] = []
-    pending_list: list[str] = []
-    list_meta: dict | None = None
-
-    def flush_list() -> None:
-        if pending_list and list_meta:
-            fragments.append(FragmentData(content="\n".join(pending_list), **list_meta))
-            pending_list.clear()
-
-    for el in elements:
-        if el.element_type == "list_item":
-            if (
-                pending_list
-                and list_meta
-                and (
-                    list_meta["section_path"] != el.section_path
-                    or list_meta["list_level"] != el.list_level
-                )
-            ):
-                flush_list()
-                list_meta = None
-
-            if not pending_list:
-                list_meta = {
-                    "element_type": "list_item",
-                    "page_number": el.page_number,
-                    "section_path": el.section_path,
-                    "position_index": el.position_index,
-                    "heading_level": None,
-                    "list_level": el.list_level,
-                    "group_id": uuid.uuid4(),
-                    "inline_spans": el.inline_spans,
-                    "meta_json": el.meta_json,
-                }
-            pending_list.append(el.content)
+def _merge_pdf_meta(left: dict | None, right: dict | None) -> dict | None:
+    blocks: list[dict] = []
+    for meta in (left, right):
+        if not meta:
             continue
-
-        flush_list()
-
-        if el.element_type in ("heading", "table", "caption", "quote", "code_block", "image", "footnote", "formula"):
-            fragments.append(FragmentData(
-                content=el.content,
-                element_type=el.element_type,
-                page_number=el.page_number,
-                section_path=el.section_path,
-                position_index=el.position_index,
-                heading_level=el.heading_level,
-                list_level=el.list_level,
-                group_id=None,
-                inline_spans=el.inline_spans,
-                meta_json=el.meta_json,
-            ))
-            continue
-
-        # Paragraph: merge short follow-up paragraphs into their neighbour so
-        # the reader doesn't get a page full of one-sentence blocks.
-        if (
-            fragments
-            and fragments[-1].element_type == "paragraph"
-            and fragments[-1].section_path == el.section_path
-            and (
-                len(fragments[-1].content) < MIN_CHARS
-                or len(el.content) < MIN_CHARS
-            )
-            and len(fragments[-1].content) + len(el.content) < MAX_MERGE
-            and _is_pdf_raw_meta(fragments[-1].meta_json)
-            and _is_pdf_raw_meta(el.meta_json)
-        ):
-            prev = fragments[-1]
-            fragments[-1] = FragmentData(
-                content=prev.content + " " + el.content,
-                element_type="paragraph",
-                page_number=prev.page_number,
-                section_path=el.section_path,
-                position_index=prev.position_index,
-                heading_level=None,
-                list_level=None,
-                group_id=prev.group_id,
-                inline_spans=_merge_inline_spans(
-                    prev.content,
-                    prev.inline_spans,
-                    el.inline_spans,
-                    separator_len=1,
-                ),
-                meta_json=_merge_meta_json(prev.meta_json, el.meta_json),
-            )
+        if isinstance(meta.get("pdf"), dict):
+            blocks.append(dict(meta["pdf"]))
+        elif isinstance(meta.get("pdf_blocks"), list):
+            blocks.extend(dict(item) for item in meta["pdf_blocks"])
         else:
-            fragments.append(FragmentData(
-                content=el.content,
-                element_type=el.element_type,
-                page_number=el.page_number,
-                section_path=el.section_path,
-                position_index=el.position_index,
-                heading_level=el.heading_level,
-                list_level=el.list_level,
-                group_id=None,
-                inline_spans=el.inline_spans,
-                meta_json=el.meta_json,
-            ))
+            return left
+    return {"pdf_blocks": blocks} if blocks else left
 
-    flush_list()
-    return [f for f in fragments if f.content.strip()]
+
+def _is_pdf_meta(meta: dict | None) -> bool:
+    return bool(meta and ("pdf" in meta or "pdf_blocks" in meta))
