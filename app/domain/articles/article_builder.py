@@ -66,7 +66,7 @@ async def build_articles_from_proposal(
         body_fragments = [
             fragment
             for fragment, _payload in prepared_blocks
-            if is_meaningful_body_fragment(fragment)
+            if fragment is not None and is_meaningful_body_fragment(fragment)
         ]
         block_count = len(body_fragments)
         char_count = sum(len(fragment.content or "") for fragment in body_fragments)

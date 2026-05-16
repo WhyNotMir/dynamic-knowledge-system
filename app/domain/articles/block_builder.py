@@ -8,7 +8,8 @@ from app.domain.articles.article_text import (
 from app.models.article_candidate import ArticleCandidate
 from app.models.source_fragment import ElementType, SourceFragment
 
-PreparedBlock = tuple[SourceFragment, dict]
+PreparedBlock = tuple[SourceFragment | None, dict]
+INTRO_HEADING_LABEL = "Overview"
 
 
 def prepare_article_blocks(candidate: ArticleCandidate) -> list[PreparedBlock]:
@@ -23,6 +24,7 @@ def prepare_article_blocks(candidate: ArticleCandidate) -> list[PreparedBlock]:
 
     prepared_blocks: list[PreparedBlock] = []
     skipped_title_heading = False
+    skipped_title_fragment: SourceFragment | None = None
     seen_ids: set = set()
 
     for fragment in sorted(fragments, key=lambda item: item.position_index):
@@ -40,6 +42,7 @@ def prepare_article_blocks(candidate: ArticleCandidate) -> list[PreparedBlock]:
             heading_key = normalise_heading_text(fragment.content)
             if heading_key and heading_key in {candidate_title_key, source_heading_key}:
                 skipped_title_heading = True
+                skipped_title_fragment = fragment
                 continue
 
         prepared_blocks.append(
@@ -62,8 +65,56 @@ def prepare_article_blocks(candidate: ArticleCandidate) -> list[PreparedBlock]:
             )
         )
 
+    if _needs_intro_heading(prepared_blocks, skipped_title_fragment):
+        intro_payload = {
+            "fragment_id": None,
+            "content": INTRO_HEADING_LABEL,
+            "element_type": ElementType.HEADING,
+            "position_index": 0,
+            "source_position_index": skipped_title_fragment.position_index,
+            "page_number": skipped_title_fragment.page_number,
+            "section_path": skipped_title_fragment.section_path,
+            "list_level": None,
+            "group_id": None,
+            "inline_spans": None,
+            "meta_json": {
+                "role": "heading",
+                "visibility": "article",
+                "synthetic_reason": "title_heading_replaced",
+                "source_heading": skipped_title_fragment.content,
+            },
+            "synthesized": True,
+        }
+        prepared_blocks = [(None, intro_payload)] + [
+            (
+                fragment,
+                {
+                    **payload,
+                    "position_index": index + 1,
+                },
+            )
+            for index, (fragment, payload) in enumerate(prepared_blocks)
+        ]
+
     return prepared_blocks
 
 
 def has_meaningful_body(prepared_blocks: list[PreparedBlock]) -> bool:
-    return any(is_meaningful_body_fragment(fragment) for fragment, _ in prepared_blocks)
+    return any(
+        fragment is not None and is_meaningful_body_fragment(fragment)
+        for fragment, _ in prepared_blocks
+    )
+
+
+def _needs_intro_heading(
+    prepared_blocks: list[PreparedBlock],
+    skipped_title_fragment: SourceFragment | None,
+) -> bool:
+    if skipped_title_fragment is None or not prepared_blocks:
+        return False
+    first_fragment, first_payload = prepared_blocks[0]
+    if first_payload["element_type"] == ElementType.HEADING:
+        return False
+    if first_fragment is None:
+        return False
+    return (first_fragment.position_index or 0) > skipped_title_fragment.position_index

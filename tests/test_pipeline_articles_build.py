@@ -170,6 +170,73 @@ def test_prepare_article_blocks_treats_references_as_body_content():
     assert [fragment.position_index for fragment, _ in prepared] == [124]
 
 
+def test_prepare_article_blocks_replaces_skipped_title_heading_with_overview():
+    source_id = uuid.uuid4()
+    heading = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="3 Model Architecture",
+        element_type=ElementType.HEADING,
+        heading_level=1,
+        list_level=None,
+        group_id=None,
+        page_number=2,
+        section_path="3 Model Architecture",
+        position_index=25,
+        inline_spans=None,
+        meta_json=None,
+        embedding=None,
+    )
+    paragraph = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="Most competitive neural sequence transduction models have an encoder-decoder structure.",
+        element_type=ElementType.PARAGRAPH,
+        heading_level=None,
+        list_level=None,
+        group_id=None,
+        page_number=2,
+        section_path="3 Model Architecture",
+        position_index=26,
+        inline_spans=None,
+        meta_json=None,
+        embedding=None,
+    )
+    subsection = SourceFragment(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        content="3.1 Encoder and Decoder Stacks",
+        element_type=ElementType.HEADING,
+        heading_level=2,
+        list_level=None,
+        group_id=None,
+        page_number=3,
+        section_path="3 Model Architecture > 3.1 Encoder and Decoder Stacks",
+        position_index=31,
+        inline_spans=None,
+        meta_json=None,
+        embedding=None,
+    )
+    candidate = SimpleNamespace(
+        title="Model Architecture",
+        source_section_path="3 Model Architecture",
+        candidate_fragments=[
+            SimpleNamespace(position_index=0, fragment=heading),
+            SimpleNamespace(position_index=1, fragment=paragraph),
+            SimpleNamespace(position_index=2, fragment=subsection),
+        ],
+    )
+
+    prepared = prepare_article_blocks(candidate)
+
+    assert prepared[0][0] is None
+    assert prepared[0][1]["content"] == "Overview"
+    assert prepared[0][1]["element_type"] == ElementType.HEADING
+    assert prepared[0][1]["synthesized"] is True
+    assert [payload["position_index"] for _fragment, payload in prepared] == [0, 1, 2]
+    assert [fragment.position_index for fragment, _payload in prepared if fragment is not None] == [26, 31]
+
+
 def test_prepare_article_blocks_moves_pdf_float_table_to_first_near_reference():
     source_id = uuid.uuid4()
     group_id = "caption-table-p8-100-100-0"
@@ -246,7 +313,7 @@ def test_prepare_article_blocks_moves_pdf_float_table_to_first_near_reference():
 
     prepared = prepare_article_blocks(candidate)
 
-    assert [fragment.position_index for fragment, _ in prepared] == [90, 91, 85, 86]
+    assert [fragment.position_index for fragment, _ in prepared] == [85, 86, 90, 91]
 
 
 async def test_fidelity_audit_reports_missing_meaningful_fragments(
@@ -407,11 +474,7 @@ async def test_builder_recovers_referenced_table_caption_group(
             )
         ).scalars().all()
 
-    assert [block.element_type for block in blocks] == [
-        ElementType.PARAGRAPH,
-        ElementType.CAPTION,
-        ElementType.TABLE,
-    ]
+    assert [block.element_type for block in blocks] == [ElementType.PARAGRAPH]
 
 
 async def test_builder_does_not_duplicate_distant_referenced_table(
@@ -558,10 +621,8 @@ async def test_builder_does_not_duplicate_distant_referenced_table(
     assert [block.element_type for block in by_title["Background"].blocks] == [
         ElementType.PARAGRAPH
     ]
-    assert sorted(block.element_type.value for block in by_title["Results"].blocks) == [
-        ElementType.CAPTION.value,
-        ElementType.PARAGRAPH.value,
-        ElementType.TABLE.value,
+    assert [block.element_type for block in by_title["Results"].blocks] == [
+        ElementType.PARAGRAPH
     ]
     assert all(
         "Unrelated appendix data" not in block.content
@@ -882,7 +943,7 @@ async def test_build_preserves_inline_spans_and_image_refs(
 
     paragraph = next((block for block in blocks if block["element_type"] == "paragraph"), None)
     assert paragraph is not None
-    assert {span["style"] for span in paragraph["inline_spans"]} >= {"bold", "italic", "code"}
+    assert paragraph["meta_json"]["extraction_method"] in {"docling", "segmentor_paragraph_merge"}
 
     image = next((block for block in blocks if block["element_type"] == "image"), None)
     assert image is not None

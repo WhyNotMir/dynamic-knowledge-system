@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.ingestion.embedding_service import embed_texts
 from app.domain.ingestion.extractor import extract
+from app.domain.ingestion.block_semantics import is_article_visible
 from app.domain.ingestion.segmentor import segment
 from app.models.source import SourceStatus
 from app.models.source_fragment import ElementType, SourceFragment
@@ -94,12 +95,21 @@ async def run_ingestion(source_id: uuid.UUID, db: AsyncSession) -> None:
         fragments_data = segment(elements)
         logger.info(f"[{source_id}] Segmented into {len(fragments_data)} fragments")
 
-        texts = [fragment.content for fragment in fragments_data]
-        embeddings = await embed_texts(texts)
-        logger.info(f"[{source_id}] Embedded {len(embeddings)} fragments")
+        visible_embedding_indexes = [
+            index
+            for index, fragment in enumerate(fragments_data)
+            if is_article_visible(fragment.meta_json)
+        ]
+        visible_texts = [fragments_data[index].content for index in visible_embedding_indexes]
+        visible_embeddings = await embed_texts(visible_texts) if visible_texts else []
+        embeddings_by_index = dict(zip(visible_embedding_indexes, visible_embeddings))
+        logger.info(
+            f"[{source_id}] Embedded {len(visible_embeddings)} article-visible "
+            f"fragments out of {len(fragments_data)}"
+        )
 
         fragments = []
-        for fragment, embedding in zip(fragments_data, embeddings):
+        for index, fragment in enumerate(fragments_data):
             meta_json = await _materialize_asset_meta(
                 project_id=source.project_id,
                 meta_json=dict(fragment.meta_json) if fragment.meta_json else None,
@@ -118,7 +128,7 @@ async def run_ingestion(source_id: uuid.UUID, db: AsyncSession) -> None:
                     position_index=fragment.position_index,
                     inline_spans=fragment.inline_spans,
                     meta_json=meta_json,
-                    embedding=embedding,
+                    embedding=embeddings_by_index.get(index),
                 )
             )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.domain.ingestion.block_semantics import is_article_visible
 from app.models.article_candidate import ArticleCandidateFragment
 from app.models.source_fragment import ElementType
 
@@ -21,7 +22,8 @@ def normalise_heading_text(value: str | None) -> str:
     if not value:
         return ""
     collapsed = " ".join(value.split())
-    return collapsed.strip().casefold()
+    collapsed = re.sub(r"^\d+(?:\.\d+)*(?:[.)])?\s*", "", collapsed).strip()
+    return collapsed.casefold()
 
 
 def looks_like_noise_text(value: str | None) -> bool:
@@ -72,6 +74,8 @@ def looks_like_noise_fragment(fragment) -> bool:
 
     element_type = getattr(fragment, "element_type", None)
     value = getattr(element_type, "value", element_type)
+    if not is_article_visible(getattr(fragment, "meta_json", None)):
+        return True
 
     if value in {
         ElementType.TABLE.value,
@@ -147,6 +151,8 @@ def candidate_description(
         fragment = item.fragment
         if fragment is None:
             continue
+        if not is_article_visible(getattr(fragment, "meta_json", None)):
+            continue
         if fragment.element_type in {
             ElementType.PARAGRAPH,
             ElementType.QUOTE,
@@ -164,6 +170,8 @@ def internal_headings(candidate_fragments: list[ArticleCandidateFragment]) -> li
     for item in candidate_fragments:
         fragment = item.fragment
         if fragment is None:
+            continue
+        if not is_article_visible(getattr(fragment, "meta_json", None)):
             continue
         if fragment.element_type != ElementType.HEADING:
             continue

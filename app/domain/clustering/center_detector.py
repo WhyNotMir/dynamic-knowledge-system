@@ -9,6 +9,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.ingestion.block_semantics import is_article_visible
 from app.models.source import Source, SourceType
 from app.models.source_fragment import ElementType, SourceFragment
 
@@ -189,6 +190,8 @@ def _group_is_meaningful(group: list[SourceFragment]) -> bool:
 
 
 def _is_body(fragment: SourceFragment) -> bool:
+    if not is_article_visible(fragment.meta_json):
+        return False
     if _looks_like_noise(fragment):
         return False
     return fragment.element_type in {
@@ -217,6 +220,8 @@ def _is_top_level_pdf_heading(fragment: SourceFragment, *, source_title_key: str
 
 
 def _looks_like_noise(fragment: SourceFragment) -> bool:
+    if not is_article_visible(fragment.meta_json):
+        return True
     text = " ".join((fragment.content or "").split()).strip()
     if not text:
         return True

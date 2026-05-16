@@ -121,6 +121,36 @@ function normalizeDisplayText(text: string) {
     .replace(/\s{2,}/g, " ");
 }
 
+// function normalizeFormulaText(text: string) {
+//   return normalizeDisplayText(text)
+//     .replace(/\s+([=_^])/g, "$1")
+//     .replace(/([=_^])\s+/g, "$1")
+//     .replace(/\s*([+*/])\s*/g, " $1 ")
+//     .replace(/\s*([<>≤≥])\s*/g, " $1 ")
+//     .replace(/\s*([=])\s*/g, " $1 ")
+//     .replace(/\s*([,;])\s*/g, "$1 ")
+//     .replace(/\s*\|\s*/g, " | ")
+//     .replace(/\s{2,}/g, " ")
+//     .trim();
+// }
+//
+// function renderFormula(block: ArticleBlock) {
+//   const lines = block.content
+//     .split("\n")
+//     .map(normalizeFormulaText)
+//     .filter(Boolean);
+//
+//   return (
+//     <div className="overflow-x-auto rounded-xl border border-vault-border bg-vault-surface/70 px-4 py-3">
+//       <div className="min-w-max space-y-1 whitespace-pre text-center font-serif text-[1.05rem] italic leading-8 text-vault-text">
+//         {(lines.length ? lines : [normalizeFormulaText(block.content)]).map((line, lineIndex) => (
+//           <div key={`${block.id}-formula-${lineIndex}`}>{line}</div>
+//         ))}
+//       </div>
+//     </div>
+//   );
+// }
+
 function spanPriority(style: string) {
   if (style === "math") return 4;
   if (style === "code") return 3;
@@ -141,7 +171,11 @@ function renderStyledChunk(text: string, styles: string[]) {
     } else if (style === "code") {
       node = <code className="rounded bg-vault-surface px-1 py-0.5 text-[0.95em]">{node}</code>;
     } else if (style === "math") {
-      node = <span className="font-serif italic text-current">{node}</span>;
+      node = (
+        <span className="inline font-serif text-[1.04em] italic leading-normal text-vault-text break-words [overflow-wrap:anywhere]">
+          {node}
+        </span>
+      );
     }
   }
 
@@ -385,11 +419,14 @@ function Block({
   onLeaveCitation: () => void;
 }) {
   const isHeading = block.element_type === "heading";
-  const isList = block.element_type === "list_item";
+  const isList = block.element_type === "list_item" || LIST_PREFIX_RE.test(block.content.trim());
   const isTable = block.element_type === "table";
   const isCaption = block.element_type === "caption";
   const isQuote = block.element_type === "quote";
   const isImage = block.element_type === "image";
+  // Formula blocks currently render through the normal text path with backend-provided inline math spans.
+  // A dedicated display-math renderer can come back once the extractor emits reliable full equations.
+  // const isFormula = block.element_type === "formula";
   const isFootnote = block.element_type === "footnote";
   const headingDepth = block.heading_depth ?? 1;
   const headingLabel = block.heading_label ?? block.content;
@@ -429,18 +466,25 @@ function Block({
       );
     }
   } else if (isList) {
-    const items = block.content
+    const lines = block.content
       .split("\n")
       .map((item) => item.trim())
-      .filter(Boolean)
-      .map((item) => item.replace(LIST_PREFIX_RE, ""));
+      .filter(Boolean);
+    const items = lines.length > 0 ? lines : [block.content.trim()];
     body = (
       <ul className="list-disc pl-7 space-y-3 marker:text-vault-gold">
-        {items.map((item) => (
+        {items.map((item) => {
+          const prefix = item.match(LIST_PREFIX_RE)?.[0] ?? "";
+          const content = prefix ? item.slice(prefix.length) : item;
+          const segmentStart = block.content.indexOf(item);
+          return (
           <li key={item} className="text-vault-text leading-8 text-[15px] pl-1">
-            <span>{item}</span>
+            <span className="break-words [overflow-wrap:anywhere]">
+              {renderStyledText(content, block.inline_spans, Math.max(segmentStart, 0) + prefix.length)}
+            </span>
           </li>
-        ))}
+          );
+        })}
       </ul>
     );
   } else if (isTable) {
@@ -476,6 +520,8 @@ function Block({
     ) : (
       <p className="text-vault-muted text-sm">Image asset unavailable.</p>
     );
+  // } else if (isFormula) {
+  //   body = renderFormula(block);
   } else if (isFootnote) {
     body = (
       <p className="text-sm text-vault-muted leading-relaxed border-l border-vault-border pl-3">
@@ -484,7 +530,7 @@ function Block({
     );
   } else {
     body = (
-      <p className="text-vault-text leading-relaxed text-[15px]">
+      <p className="max-w-full text-vault-text leading-relaxed text-[15px] break-words [overflow-wrap:anywhere]">
         {renderInlineContent(block, projectId)}
       </p>
     );

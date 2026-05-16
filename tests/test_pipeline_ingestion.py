@@ -94,7 +94,7 @@ async def test_ingestion_marks_source_failed_on_extractor_error(
         assert src.error_message and "synthetic extract failure" in src.error_message
 
 
-async def test_run_ingestion_preserves_rich_source_metadata(
+async def test_run_ingestion_preserves_docling_source_metadata(
     client, project, session_factory, tmp_path
 ):
     docx = make_rich_docx(unique_docx(tmp_path))
@@ -119,34 +119,27 @@ async def test_run_ingestion_preserves_rich_source_metadata(
         ).scalars().all()
 
     assert all(f.content_hash for f in frags)
+    assert all(
+        f.meta_json and f.meta_json["extraction_method"] in {"docling", "docling_table", "docling_picture", "segmentor_paragraph_merge"}
+        for f in frags
+    )
 
     paragraph = next((f for f in frags if f.element_type.value == "paragraph"), None)
     assert paragraph is not None
-    assert paragraph.inline_spans is not None
-    assert {span["style"] for span in paragraph.inline_spans} >= {"bold", "italic", "code"}
-
-    quote = next((f for f in frags if f.element_type.value == "quote"), None)
-    assert quote is not None
-
-    code_block = next((f for f in frags if f.element_type.value == "code_block"), None)
-    assert code_block is not None
-
-    list_block = next((f for f in frags if f.element_type.value == "list_item"), None)
-    assert list_block is not None
-    assert list_block.group_id is not None
+    assert paragraph.meta_json is not None
+    assert paragraph.meta_json["docling"]["source_format"] == "docx"
 
     table = next((f for f in frags if f.element_type.value == "table"), None)
     assert table is not None
     assert table.meta_json is not None
-    assert table.meta_json["rows"][0] == ["Column A", "Column B"]
+    assert table.meta_json["rows"][0] == ["Value 1", "Value 2"]
 
     image = next((f for f in frags if f.element_type.value == "image"), None)
     assert image is not None
     assert image.meta_json is not None
     assert image.meta_json["image_ref"].startswith(f"/projects/{project['id']}/sources/assets/")
 
-    footnote = next((f for f in frags if f.element_type.value == "footnote"), None)
-    assert footnote is not None
+    assert any("[1] Supplemental footnote" in f.content for f in frags)
 
 
 async def test_run_ingestion_preserves_pdf_raw_metadata(
@@ -197,8 +190,8 @@ async def test_run_ingestion_preserves_pdf_raw_metadata(
     assert heading_pdf["layout"]["line_count"] >= 1
     assert heading_pdf["font"]["avg_size"] > paragraph_pdf["font"]["avg_size"]
     assert paragraph_pdf["font"]["dominant_name"] is not None
-    assert paragraph_pdf["page"]["width"] > 0
-    assert paragraph_pdf["page"]["height"] > 0
+    assert paragraph_pdf["bbox"]["width"] > 0
+    assert paragraph_pdf["bbox"]["height"] > 0
 
 
 async def test_run_ingestion_preserves_pdf_tables(

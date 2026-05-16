@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import uuid
 
+from app.domain.ingestion.block_semantics import (
+    ROLE_BODY,
+    VISIBILITY_ARTICLE,
+    is_article_visible,
+    with_semantic_meta,
+)
 from app.domain.ingestion.extractor import ExtractedElement
 
 
@@ -88,6 +94,8 @@ def _can_merge_with_previous(
         return False
     if previous.element_type != "paragraph" or element.element_type != "paragraph":
         return False
+    if not is_article_visible(previous.meta_json) or not is_article_visible(element.meta_json):
+        return False
     if previous.section_path != element.section_path:
         return False
     if previous.page_number != element.page_number:
@@ -97,11 +105,6 @@ def _can_merge_with_previous(
     if (
         (_is_pdf_meta(previous.meta_json) or _is_pdf_meta(element.meta_json))
         and _looks_like_standalone_title(previous.content)
-    ):
-        return False
-    if (
-        (_is_pdf_meta(previous.meta_json) or _is_pdf_meta(element.meta_json))
-        and previous.content.endswith((".", "?", "!", ":"))
     ):
         return False
     return len(previous.content) < SHORT_PARAGRAPH or len(content) < SHORT_PARAGRAPH
@@ -150,10 +153,38 @@ def _merge_pdf_meta(left: dict | None, right: dict | None) -> dict | None:
             blocks.append(dict(meta["pdf"]))
         elif isinstance(meta.get("pdf_blocks"), list):
             blocks.extend(dict(item) for item in meta["pdf_blocks"])
+        elif isinstance(meta.get("docling"), dict):
+            blocks.append({"docling": dict(meta["docling"])})
+        elif isinstance(meta.get("docling_blocks"), list):
+            blocks.extend(dict(item) for item in meta["docling_blocks"])
         else:
             return left
-    return {"pdf_blocks": blocks} if blocks else left
+    if not blocks:
+        return left
+    block_key = "pdf_blocks" if any("pdf" in item or "block_no" in item for item in blocks) else "docling_blocks"
+    return with_semantic_meta(
+        {block_key: blocks},
+        role=ROLE_BODY,
+        visibility=VISIBILITY_ARTICLE,
+        confidence=min(_confidence(left), _confidence(right)),
+        extraction_method="segmentor_paragraph_merge",
+    )
+
+
+def _confidence(meta: dict | None) -> float:
+    if not meta:
+        return 0.5
+    value = meta.get("confidence")
+    if isinstance(value, (int, float)):
+        return float(value)
+    semantic = meta.get("semantic")
+    if isinstance(semantic, dict) and isinstance(semantic.get("confidence"), (int, float)):
+        return float(semantic["confidence"])
+    pdf = meta.get("pdf")
+    if isinstance(pdf, dict) and isinstance(pdf.get("confidence"), (int, float)):
+        return float(pdf["confidence"])
+    return 0.5
 
 
 def _is_pdf_meta(meta: dict | None) -> bool:
-    return bool(meta and ("pdf" in meta or "pdf_blocks" in meta))
+    return bool(meta and ("pdf" in meta or "pdf_blocks" in meta or "docling" in meta or "docling_blocks" in meta))
