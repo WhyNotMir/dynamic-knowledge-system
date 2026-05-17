@@ -92,6 +92,13 @@ def is_noise_block(block: ArticleBlock) -> bool:
     stripped = normalize_text(block.content)
     if not stripped:
         return True
+    meta_json = block.meta_json or {}
+    semantic = meta_json.get("semantic") if isinstance(meta_json.get("semantic"), dict) else {}
+    if block.element_type == ElementType.FOOTNOTE and (
+        meta_json.get("references_section") is True
+        or semantic.get("role") == "reference"
+    ):
+        return False
     if block.element_type in {
         ElementType.IMAGE,
         ElementType.TABLE,
@@ -272,6 +279,8 @@ def build_sidebar_tree(
 ) -> list[dict]:
     articles_by_block: dict[uuid.UUID, list[Article]] = {}
     for article in articles:
+        if article.kind.value == "node":
+            continue
         if article.structural_block_id:
             articles_by_block.setdefault(article.structural_block_id, []).append(article)
 
@@ -300,10 +309,10 @@ def build_sidebar_tree(
 
     grouped_unassigned: dict[tuple[str, str], list[Article]] = {}
     for article in articles:
-        if article.structural_block_id:
-            continue
         if article.kind.value == "node":
             key = ("nodes", UNASSIGNED_NODES_LABEL)
+        elif article.structural_block_id:
+            continue
         else:
             label = normalize_sidebar_section_label(article)
             key = ("unassigned", label)

@@ -355,6 +355,10 @@ function hasRenderableCaptionTarget(block: ArticleBlock) {
   return (block.element_type === "image" || block.element_type === "table") && Boolean(getLinkedCaptionText(block));
 }
 
+function getImageRef(block: ArticleBlock) {
+  return typeof block.meta_json?.image_ref === "string" ? block.meta_json.image_ref : null;
+}
+
 function renderInlineContent(block: ArticleBlock, projectId: string) {
   const ranges = block.link_ranges ?? [];
   if (ranges.length === 0) {
@@ -400,10 +404,39 @@ function renderInlineContent(block: ArticleBlock, projectId: string) {
   return parts;
 }
 
+function ImageGallery({ blocks }: { blocks: ArticleBlock[] }) {
+  const caption = blocks.map(getLinkedCaptionText).find(Boolean);
+  return (
+    <figure className="space-y-3 rounded-xl border border-vault-border bg-vault-surface p-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {blocks.map((block) => {
+          const imageRef = getImageRef(block);
+          if (!imageRef) return null;
+          return (
+            <div key={block.id} className="flex min-h-[260px] items-center justify-center rounded-lg bg-white p-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`${API_BASE}${imageRef}`}
+                alt={typeof block.meta_json?.alt === "string" ? block.meta_json.alt : "Source image"}
+                className="max-h-[720px] w-auto max-w-full object-contain"
+              />
+            </div>
+          );
+        })}
+      </div>
+      {caption && <figcaption className="text-sm italic text-vault-muted leading-relaxed">{caption}</figcaption>}
+    </figure>
+  );
+}
+
 type HoveredCitation = {
   id: string;
   sourceContextLabel: string | null;
 };
+
+type BlockRenderItem =
+  | { kind: "block"; block: ArticleBlock }
+  | { kind: "image_gallery"; groupId: string; blocks: ArticleBlock[] };
 
 function Block({
   block,
@@ -505,7 +538,7 @@ function Block({
       </blockquote>
     );
   } else if (isImage) {
-    const imageRef = typeof block.meta_json?.image_ref === "string" ? block.meta_json.image_ref : null;
+    const imageRef = getImageRef(block);
     const caption = getLinkedCaptionText(block);
     body = imageRef ? (
       <figure className="space-y-3 rounded-xl border border-vault-border bg-vault-surface p-4">
@@ -587,6 +620,35 @@ export default function ArticlePage() {
         !renderableCaptionGroups.has(getCaptionGroupId(block) ?? "")
     );
   }, [article]);
+
+  const renderItems = useMemo<BlockRenderItem[]>(() => {
+    const items: BlockRenderItem[] = [];
+    let index = 0;
+    while (index < visibleBlocks.length) {
+      const block = visibleBlocks[index];
+      const groupId = getCaptionGroupId(block);
+      if (block.element_type === "image" && groupId) {
+        const group = [block];
+        let nextIndex = index + 1;
+        while (
+          nextIndex < visibleBlocks.length &&
+          visibleBlocks[nextIndex].element_type === "image" &&
+          getCaptionGroupId(visibleBlocks[nextIndex]) === groupId
+        ) {
+          group.push(visibleBlocks[nextIndex]);
+          nextIndex += 1;
+        }
+        if (group.length > 1) {
+          items.push({ kind: "image_gallery", groupId, blocks: group });
+          index = nextIndex;
+          continue;
+        }
+      }
+      items.push({ kind: "block", block });
+      index += 1;
+    }
+    return items;
+  }, [visibleBlocks]);
 
   const displayBlockCount = useMemo(
     () => visibleBlocks.filter((block) => block.element_type !== "heading").length,
@@ -797,17 +859,35 @@ export default function ArticlePage() {
         </motion.div>
 
         <div className="space-y-3">
-          {visibleBlocks.map((block, i) => (
-            <div key={block.id} id={`block-${block.id}`} data-block-id={block.id}>
-              <Block
-                block={block}
-                index={i}
-                projectId={projectId}
-                onHoverCitation={setHoveredCitation}
-                onLeaveCitation={() => setHoveredCitation((current) => (current?.id === block.id ? null : current))}
-              />
-            </div>
-          ))}
+          {renderItems.map((item, i) => {
+            if (item.kind === "image_gallery") {
+              const firstBlock = item.blocks[0];
+              return (
+                <div key={item.groupId} id={`block-${firstBlock.id}`} data-block-id={firstBlock.id}>
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.03, duration: 0.3 }}
+                    className="py-0.5"
+                  >
+                    <ImageGallery blocks={item.blocks} />
+                  </motion.div>
+                </div>
+              );
+            }
+            const block = item.block;
+            return (
+              <div key={block.id} id={`block-${block.id}`} data-block-id={block.id}>
+                <Block
+                  block={block}
+                  index={i}
+                  projectId={projectId}
+                  onHoverCitation={setHoveredCitation}
+                  onLeaveCitation={() => setHoveredCitation((current) => (current?.id === block.id ? null : current))}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
 

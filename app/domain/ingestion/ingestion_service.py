@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 import base64
+import re
 from pathlib import Path
 
 from loguru import logger
@@ -73,14 +74,7 @@ async def run_ingestion(source_id: uuid.UUID, db: AsyncSession) -> None:
         elements = extract(source.storage_path)
         logger.info(f"[{source_id}] Extracted {len(elements)} elements")
 
-        source_title = next(
-            (
-                element.content
-                for element in elements
-                if element.element_type == "heading" and element.heading_level == 1
-            ),
-            None,
-        )
+        source_title = _source_title_from_elements(elements)
 
         pages = [element.page_number for element in elements if element.page_number is not None]
         await repo.update_metadata(
@@ -147,3 +141,30 @@ async def mark_ingestion_failed(
     error: str,
 ) -> None:
     await SourceRepository(db).update_status(source_id, SourceStatus.FAILED, error=error)
+
+
+def _source_title_from_elements(elements: list) -> str | None:
+    ignored_titles = {"abstract", "references", "bibliography", "acknowledgment", "acknowledgement"}
+    for element in elements:
+        if element.element_type != "heading" or element.heading_level != 1:
+            continue
+        if not is_article_visible(element.meta_json):
+            continue
+        title = " ".join((element.content or "").split()).strip()
+        if not title or title.casefold() in ignored_titles:
+            continue
+        if _looks_like_author_heading(title):
+            continue
+        return title
+    return None
+
+
+def _looks_like_author_heading(value: str) -> bool:
+    text = " ".join(value.split()).strip()
+    if not text:
+        return False
+    if any(separator in text.casefold() for separator in (" and ", ",", " & ")):
+        words = [word for word in re.split(r"\s+", text) if word]
+        capitalized = sum(1 for word in words if word[:1].isupper())
+        return capitalized >= 3 and len(text) <= 180
+    return False

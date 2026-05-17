@@ -65,6 +65,8 @@ def _pdf_structure_candidates(
     source_title_key = _key(source_title)
 
     for fragment in fragments:
+        if not _is_candidate_visible(fragment):
+            continue
         if (
             fragment.element_type == ElementType.HEADING
             and source_title_key
@@ -155,7 +157,11 @@ def _candidate_from_group(
     source: str,
     title: str | None = None,
 ) -> dict[str, Any]:
-    ordered = sorted(group, key=lambda fragment: fragment.position_index)
+    ordered = [
+        fragment
+        for fragment in sorted(group, key=lambda fragment: fragment.position_index)
+        if _is_candidate_visible(fragment)
+    ]
     title = _clean_title(title or _group_title(ordered))
     return {
         "source_section_path": title,
@@ -190,7 +196,7 @@ def _group_is_meaningful(group: list[SourceFragment]) -> bool:
 
 
 def _is_body(fragment: SourceFragment) -> bool:
-    if not is_article_visible(fragment.meta_json):
+    if not _is_candidate_visible(fragment):
         return False
     if _looks_like_noise(fragment):
         return False
@@ -204,6 +210,12 @@ def _is_body(fragment: SourceFragment) -> bool:
         ElementType.FOOTNOTE,
         ElementType.FORMULA,
     }
+
+
+def _is_candidate_visible(fragment: SourceFragment) -> bool:
+    if not is_article_visible(getattr(fragment, "meta_json", None)):
+        return False
+    return not _looks_like_noise(fragment)
 
 
 def _is_top_level_pdf_heading(fragment: SourceFragment, *, source_title_key: str) -> bool:
@@ -265,113 +277,3 @@ def _looks_like_text_salad(fragments: list[SourceFragment]) -> bool:
         if compact.isalpha() and len(compact) <= 24:
             alpha_only += 1
     return (short / len(fragments)) >= 0.72 and (alpha_only / len(fragments)) >= 0.5
-
-
-# Compatibility helpers kept for older tests/callers during the refactor window.
-# The active detector above no longer depends on these.
-def _cluster_orphan_buckets(
-    orphan_buckets: dict[tuple[uuid.UUID, str], list[SourceFragment]],
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for (_source_id, source_type), fragments in orphan_buckets.items():
-        candidates.extend(_cluster_orphans(fragments, source_type=source_type))
-    return candidates
-
-
-def _cluster_orphans(
-    fragments: list[SourceFragment],
-    *,
-    source_type: str,
-) -> list[dict[str, Any]]:
-    ordered = sorted(fragments, key=lambda fragment: fragment.position_index)
-    if source_type == SourceType.PDF.value:
-        groups = _fallback_page_or_size_groups(ordered)
-    else:
-        groups = [ordered]
-    return [
-        _candidate_from_group(group, source="orphan_source")
-        for group in groups
-        if _group_is_meaningful(group)
-    ]
-
-
-def _looks_like_pdf_major_heading(fragment: SourceFragment) -> bool:
-    return _is_top_level_pdf_heading(fragment, source_title_key="")
-
-
-def _candidate_group_path(
-    source_type: str,
-    source_title: str | None,
-    path: str | None,
-) -> str:
-    raw = (path or "").strip()
-    if not raw:
-        return ""
-    if source_type != SourceType.PDF.value:
-        return _top_level(raw)
-    parts = [part.strip() for part in raw.split(" > ") if part.strip()]
-    title_key = _key(source_title)
-    while parts and _key(parts[0]) == title_key:
-        parts.pop(0)
-    return parts[0] if parts else ""
-
-
-def _split_large_pdf_group(section_fragments: list[SourceFragment]) -> list[list[SourceFragment]]:
-    groups: list[list[SourceFragment]] = []
-    current: list[SourceFragment] = []
-    for fragment in section_fragments:
-        if _is_major_heading_for_compat(fragment) and current:
-            groups.append(current)
-            current = []
-        current.append(fragment)
-    if current:
-        groups.append(current)
-    return groups or [section_fragments]
-
-
-def _merge_pdf_nested_section_groups(
-    section_groups: dict[tuple[uuid.UUID, str, str], list[SourceFragment]],
-) -> dict[tuple[uuid.UUID, str, str], list[SourceFragment]]:
-    merged: dict[tuple[uuid.UUID, str, str], list[SourceFragment]] = {}
-    by_source: dict[uuid.UUID, list[tuple[str, list[SourceFragment]]]] = defaultdict(list)
-
-    for (source_id, source_type, section_path), fragments in section_groups.items():
-        if source_type != SourceType.PDF.value:
-            merged[(source_id, source_type, section_path)] = fragments
-        else:
-            by_source[source_id].append((section_path, fragments))
-
-    for source_id, entries in by_source.items():
-        entries = sorted(entries, key=lambda item: min(fragment.position_index for fragment in item[1]))
-        parents: list[tuple[str, list[SourceFragment]]] = []
-        for path, fragments in entries:
-            prefix = _numeric_prefix(path)
-            parent_index = None
-            if prefix and "." in prefix:
-                for index in range(len(parents) - 1, -1, -1):
-                    parent_prefix = _numeric_prefix(parents[index][0])
-                    if parent_prefix and prefix.startswith(parent_prefix + "."):
-                        parent_index = index
-                        break
-            if parent_index is None:
-                parents.append((path, list(fragments)))
-            else:
-                parents[parent_index][1].extend(fragments)
-        for path, fragments in parents:
-            merged[(source_id, SourceType.PDF.value, path)] = fragments
-    return merged
-
-
-def _is_major_heading_for_compat(fragment: SourceFragment) -> bool:
-    element_type = getattr(fragment.element_type, "value", fragment.element_type)
-    if element_type != ElementType.HEADING.value:
-        return False
-    text = " ".join((fragment.content or "").split()).strip()
-    return bool((fragment.heading_level or 0) == 1 or _NUMBERED_HEADING_RE.match(text))
-
-
-def _numeric_prefix(value: str | None) -> str | None:
-    if not value:
-        return None
-    match = re.match(r"^(\d+(?:\.\d+)*)", value.strip())
-    return match.group(1) if match else None

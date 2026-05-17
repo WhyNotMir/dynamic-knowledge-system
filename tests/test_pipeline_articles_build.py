@@ -31,10 +31,11 @@ from app.domain.articles.article_text import (
 from app.domain.articles.article_builder import build_articles_from_proposal
 from app.domain.articles.block_builder import has_meaningful_body, prepare_article_blocks
 from app.domain.articles.fidelity import audit_source_article_fidelity
+from app.domain.articles.view_model import build_sidebar_tree, is_noise_block
 from app.domain.articles.structure_service import run_structure_proposal
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.alias import Alias
-from app.models.article import Article, ArticleBlock
+from app.models.article import Article, ArticleBlock, ArticleKind
 from app.models.article_candidate import (
     ArticleCandidate,
     ArticleCandidateFragment,
@@ -45,6 +46,7 @@ from app.models.article_candidate import (
 from app.models.source import Source, SourceStatus, SourceType
 from app.models.source_fragment import ElementType, SourceFragment
 from app.models.graph_edge import EdgeKind, GraphEdge
+from app.models.structural_block import StructuralBlock
 
 from tests.helpers import (
     confirm_all_candidates,
@@ -89,6 +91,60 @@ def test_builder_noise_filter_identifies_pdf_artifacts():
     assert looks_like_noise_text("Ashish Vaswani * Google Brain avaswani@google.com")
     assert not looks_like_noise_text("GNMT + RL [38] 24.6 39.92 2 . 3 . 10 19 1 . 4 . 10 20")
     assert not looks_like_noise_text("The transformer uses multi-head attention in three different ways.")
+
+
+def test_article_view_model_keeps_arxiv_references_visible():
+    block = ArticleBlock(
+        article_id=uuid.uuid4(),
+        content=(
+            "Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. "
+            "Layer normalization. arXiv preprint arXiv:1607.06450, 2016."
+        ),
+        element_type=ElementType.FOOTNOTE,
+        position_index=0,
+        source_position_index=113,
+        page_number=10,
+        meta_json={
+            "references_section": True,
+            "semantic": {"role": "reference", "visibility": "article"},
+        },
+    )
+
+    assert is_noise_block(block) is False
+
+
+def test_sidebar_keeps_nodes_out_of_structural_article_tree():
+    block_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    structured_block = StructuralBlock(
+        id=block_id,
+        project_id=project_id,
+        name="Architecture",
+        position_index=0,
+    )
+    node_article = Article(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        structural_block_id=block_id,
+        title="Attention Visualizations",
+        slug="attention-visualizations",
+        kind=ArticleKind.NODE,
+    )
+    regular_article = Article(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        structural_block_id=block_id,
+        title="Model Architecture",
+        slug="model-architecture",
+        kind=ArticleKind.ARTICLE,
+    )
+
+    tree = build_sidebar_tree([structured_block], [node_article, regular_article])
+
+    architecture = next(item for item in tree if item["label"] == "Architecture")
+    nodes = next(item for item in tree if item["label"] == "Unassigned Nodes")
+    assert [article["title"] for article in architecture["articles"]] == ["Model Architecture"]
+    assert [article["title"] for article in nodes["articles"]] == ["Attention Visualizations"]
 
 
 def test_prepare_article_blocks_keeps_scientific_tables_and_wsJ_paragraphs():
@@ -380,6 +436,66 @@ async def test_fidelity_audit_reports_missing_meaningful_fragments(
     assert report.covered_fragment_count == 1
     assert report.missing_fragment_ids == [missing_id]
     assert report.issues[0].code == "missing_fragment"
+
+
+async def test_fidelity_audit_reports_image_fragments_without_assets(
+    project, session_factory
+):
+    source_id = uuid.uuid4()
+    image_id = uuid.uuid4()
+
+    async with session_factory() as db:
+        source = Source(
+            id=source_id,
+            project_id=uuid.UUID(project["id"]),
+            filename="figures.pdf",
+            title="Figures",
+            source_type=SourceType.PDF,
+            storage_path="/tmp/figures.pdf",
+            status=SourceStatus.DONE,
+        )
+        image = SourceFragment(
+            id=image_id,
+            source_id=source_id,
+            content="Source figure",
+            element_type=ElementType.IMAGE,
+            position_index=4,
+            page_number=2,
+            meta_json={
+                "image": {"has_payload": False},
+                "semantic": {"issues": ["missing_image_payload"]},
+            },
+        )
+        article = Article(
+            project_id=uuid.UUID(project["id"]),
+            title="Figures",
+            slug="figures",
+        )
+        db.add_all([source, image, article])
+        await db.flush()
+        db.add(
+            ArticleBlock(
+                article_id=article.id,
+                fragment_id=image_id,
+                content=image.content,
+                element_type=image.element_type,
+                position_index=0,
+                source_position_index=image.position_index,
+                page_number=image.page_number,
+                meta_json=image.meta_json,
+            )
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        report = await audit_source_article_fidelity(
+            source_id=source_id,
+            project_id=uuid.UUID(project["id"]),
+            db=db,
+        )
+
+    assert report.missing_fragment_ids == []
+    assert [issue.code for issue in report.issues] == ["image_asset_missing"]
 
 
 async def test_builder_recovers_referenced_table_caption_group(

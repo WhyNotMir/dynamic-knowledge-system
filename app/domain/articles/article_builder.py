@@ -125,6 +125,15 @@ async def _structural_block_id(
 ) -> uuid.UUID | None:
     if not name:
         return None
+    path_parts = [part.strip() for part in name.split(">") if part.strip()]
+    if len(path_parts) > 1:
+        block_id = await _structural_block_id_by_path(
+            db,
+            project_id=project_id,
+            path_parts=path_parts,
+        )
+        if block_id:
+            return block_id
     result = await db.execute(
         select(StructuralBlock.id).where(
             StructuralBlock.project_id == project_id,
@@ -132,6 +141,35 @@ async def _structural_block_id(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def _structural_block_id_by_path(
+    db: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    path_parts: list[str],
+) -> uuid.UUID | None:
+    parent_id: uuid.UUID | None = None
+    current_id: uuid.UUID | None = None
+    for part in path_parts:
+        conditions = [
+            StructuralBlock.project_id == project_id,
+            StructuralBlock.name == part,
+        ]
+        conditions.append(
+            StructuralBlock.parent_id.is_(None)
+            if parent_id is None
+            else StructuralBlock.parent_id == parent_id
+        )
+        result = await db.execute(
+            select(StructuralBlock).where(*conditions)
+        )
+        block = result.scalar_one_or_none()
+        if block is None:
+            return None
+        current_id = block.id
+        parent_id = block.id
+    return current_id
 
 
 async def _refresh_project_summary(

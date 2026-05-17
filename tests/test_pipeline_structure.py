@@ -20,11 +20,19 @@ from sqlalchemy.orm import selectinload
 
 from app.agents.chains.structure_agent import propose_structure
 from app.domain.clustering.center_detector import (
-    _candidate_group_path,
-    _merge_pdf_nested_section_groups,
-    _split_large_pdf_group,
+    _pdf_structure_candidates,
 )
-from app.domain.articles.structure_service import run_structure_proposal
+from app.domain.ingestion.block_semantics import (
+    ROLE_METADATA,
+    VISIBILITY_ARTICLE,
+    VISIBILITY_HIDDEN,
+    with_semantic_meta,
+)
+from app.domain.articles.structure_service import (
+    _clean_article_title,
+    _unique_title,
+    run_structure_proposal,
+)
 from app.domain.ingestion.ingestion_service import run_ingestion
 from app.models.article_candidate import (
     ArticleCandidate,
@@ -341,82 +349,119 @@ async def test_structure_agent_uses_llm_titles_for_pdf_candidates(monkeypatch):
     ]
 
 
-def test_pdf_group_path_uses_first_semantic_section_below_source_title():
-    assert (
-        _candidate_group_path(
-            "pdf",
-            "Attention Is All You Need",
-            "Attention Is All You Need > 3 Model Architecture > 3.2 Attention > 3.2.1 Scaled Dot-Product Attention",
+def test_pdf_structure_candidates_keep_nested_sections_and_drop_hidden_noise():
+    def meta(visibility: str = VISIBILITY_ARTICLE):
+        return with_semantic_meta(
+            {},
+            role=ROLE_METADATA if visibility == VISIBILITY_HIDDEN else "body",
+            visibility=visibility,
+            confidence=0.9,
+            extraction_method="test",
         )
-        == "3 Model Architecture"
-    )
 
-    assert (
-        _candidate_group_path(
-            "pdf",
-            "Attention Is All You Need",
-            "Attention Is All You Need > Abstract",
+    def make_fragment(
+        index: int,
+        content: str,
+        *,
+        element_type: ElementType,
+        heading_level: int | None = None,
+        visibility: str = VISIBILITY_ARTICLE,
+    ):
+        return SimpleNamespace(
+            content=content,
+            element_type=element_type,
+            heading_level=heading_level,
+            position_index=index,
+            page_number=1,
+            meta_json=meta(visibility),
         )
-        == "Abstract"
-    )
+
+    fragments = [
+        make_fragment(
+            0,
+            "Provided proper attribution is provided",
+            element_type=ElementType.PARAGRAPH,
+            visibility=VISIBILITY_HIDDEN,
+        ),
+        make_fragment(1, "Attention Is All You Need", element_type=ElementType.HEADING, heading_level=1),
+        make_fragment(2, "3 Model Architecture", element_type=ElementType.HEADING, heading_level=1),
+        make_fragment(3, "Architecture body " * 40, element_type=ElementType.PARAGRAPH),
+        make_fragment(4, "3.2 Attention", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(5, "Attention body " * 40, element_type=ElementType.PARAGRAPH),
+        make_fragment(6, "4 Why Self-Attention", element_type=ElementType.HEADING, heading_level=1),
+        make_fragment(7, "Self attention body " * 40, element_type=ElementType.PARAGRAPH),
+    ]
+
+    candidates = _pdf_structure_candidates(fragments, source_title="Attention Is All You Need")
+
+    assert [candidate["source_section_path"] for candidate in candidates] == [
+        "Model Architecture",
+        "Why Self-Attention",
+    ]
+    first_contents = [fragment.content for fragment in candidates[0]["fragments"]]
+    assert "Provided proper attribution is provided" not in first_contents
+    assert "3.2 Attention" in first_contents
 
 
-def test_large_pdf_group_is_split_by_major_headings():
+def test_pdf_structure_candidates_keep_ieee_letter_headings_inside_roman_sections():
     def make_fragment(index: int, content: str, *, element_type: ElementType, heading_level: int | None = None):
         return SimpleNamespace(
             content=content,
             element_type=element_type,
             heading_level=heading_level,
             position_index=index,
+            page_number=1,
+            meta_json=with_semantic_meta(
+                {},
+                role="body",
+                visibility=VISIBILITY_ARTICLE,
+                confidence=0.9,
+                extraction_method="test",
+            ),
         )
 
     fragments = [
-        make_fragment(0, "Attention Is All You Need", element_type=ElementType.HEADING, heading_level=1),
-        make_fragment(1, "Prelude " * 220, element_type=ElementType.PARAGRAPH),
-        make_fragment(2, "1 Introduction", element_type=ElementType.HEADING, heading_level=1),
-        make_fragment(3, "Intro body " * 220, element_type=ElementType.PARAGRAPH),
-        make_fragment(4, "2 Background", element_type=ElementType.HEADING, heading_level=1),
-        make_fragment(5, "Background body " * 220, element_type=ElementType.PARAGRAPH),
-        make_fragment(6, "3 Model Architecture", element_type=ElementType.HEADING, heading_level=1),
-        make_fragment(7, "Architecture body " * 260, element_type=ElementType.PARAGRAPH),
+        make_fragment(0, "I. INTRODUCTION", element_type=ElementType.HEADING, heading_level=1),
+        make_fragment(1, "Introduction body " * 20, element_type=ElementType.PARAGRAPH),
+        make_fragment(2, "A. Historical Context", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(3, "Historical body " * 20, element_type=ElementType.PARAGRAPH),
+        make_fragment(4, "B. Impact", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(5, "Impact body " * 20, element_type=ElementType.PARAGRAPH),
+        make_fragment(6, "II. METHODS", element_type=ElementType.HEADING, heading_level=1),
+        make_fragment(7, "Methods body " * 20, element_type=ElementType.PARAGRAPH),
+        make_fragment(8, "A. Setup", element_type=ElementType.HEADING, heading_level=2),
+        make_fragment(9, "Setup body " * 20, element_type=ElementType.PARAGRAPH),
     ]
 
-    groups = _split_large_pdf_group(fragments)
+    candidates = _pdf_structure_candidates(fragments, source_title=None)
 
-    assert len(groups) == 4
-    assert groups[0][0].content == "Attention Is All You Need"
-    assert groups[1][0].content == "1 Introduction"
-    assert groups[2][0].content == "2 Background"
-    assert groups[3][0].content == "3 Model Architecture"
+    assert [candidate["source_section_path"] for candidate in candidates] == [
+        "I. INTRODUCTION",
+        "II. METHODS",
+    ]
+    assert [fragment.content for fragment in candidates[0]["fragments"]] == [
+        "I. INTRODUCTION",
+        "Introduction body " * 20,
+        "A. Historical Context",
+        "Historical body " * 20,
+        "B. Impact",
+        "Impact body " * 20,
+    ]
 
 
-def test_pdf_nested_section_groups_merge_back_into_parent_chapter():
-    source_id = uuid.uuid4()
+def test_article_title_cleanup_strips_document_numbering_and_humanizes_acronyms():
+    assert _clean_article_title("I. INTRODUCTION") == "Introduction"
+    assert _clean_article_title("C. GPT SERIES: SCALING DECODER-ONLY MODELS") == (
+        "GPT Series: Scaling Decoder-Only Models"
+    )
 
-    def make_fragment(index: int, content: str):
-        return SimpleNamespace(
-            source_id=source_id,
-            content=content,
-            element_type=ElementType.PARAGRAPH,
-            heading_level=None,
-            position_index=index,
-        )
 
-    section_groups = {
-        (source_id, "pdf", "3 Model Architecture"): [
-            make_fragment(0, "Architecture intro " * 40),
-        ],
-        (source_id, "pdf", "3.2 Attention"): [
-            make_fragment(1, "Attention body " * 40),
-        ],
-        (source_id, "pdf", "3.2.3 Applications of Attention in our Model"): [
-            make_fragment(2, "Applications body " * 40),
-        ],
-    }
+def test_article_title_uniqueness_adds_source_context_for_duplicates():
+    title = _unique_title(
+        "Introduction",
+        {"introduction"},
+        {"source_section_path": "II. Background"},
+        1,
+    )
 
-    merged = _merge_pdf_nested_section_groups(section_groups)
-
-    assert len(merged) == 1
-    only_key = next(iter(merged))
-    assert only_key[2] == "3 Model Architecture"
-    assert len(merged[only_key]) == 3
+    assert title == "Introduction: Background"

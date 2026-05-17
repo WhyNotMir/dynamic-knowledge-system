@@ -105,6 +105,7 @@ async def audit_source_article_fidelity(
         for fragment in duplicated
     )
     issues.extend(_caption_target_issues(meaningful, meaningful_ids))
+    issues.extend(_image_asset_issues(meaningful))
 
     return SourceArticleFidelityReport(
         source_id=source_id,
@@ -123,6 +124,8 @@ def _is_meaningful_for_fidelity(fragment: SourceFragment) -> bool:
     if looks_like_noise_fragment(fragment):
         return False
     if fragment.element_type == ElementType.HEADING:
+        if (fragment.heading_level or 1) <= 1:
+            return False
         return bool(fragment.content.strip())
     if fragment.element_type == ElementType.FOOTNOTE:
         meta_json = fragment.meta_json or {}
@@ -188,6 +191,37 @@ def _caption_target_issues(
                 )
             )
 
+    return issues
+
+
+def _image_asset_issues(fragments: list[SourceFragment]) -> list[FidelityIssue]:
+    issues: list[FidelityIssue] = []
+    for fragment in fragments:
+        if fragment.element_type != ElementType.IMAGE:
+            continue
+        meta_json = fragment.meta_json or {}
+        image_meta = meta_json.get("image") if isinstance(meta_json.get("image"), dict) else {}
+        semantic = meta_json.get("semantic") if isinstance(meta_json.get("semantic"), dict) else {}
+        semantic_issues = semantic.get("issues") if isinstance(semantic.get("issues"), list) else []
+        top_level_issues = meta_json.get("issues") if isinstance(meta_json.get("issues"), list) else []
+        has_payload = image_meta.get("has_payload")
+        has_ref = isinstance(meta_json.get("image_ref"), str) and bool(meta_json["image_ref"].strip())
+        missing_payload = (
+            has_payload is False
+            or "missing_image_payload" in semantic_issues
+            or "missing_image_payload" in top_level_issues
+        )
+        if has_ref and not missing_payload:
+            continue
+        issues.append(
+            FidelityIssue(
+                code="image_asset_missing",
+                position_index=fragment.position_index,
+                page_number=fragment.page_number,
+                element_type=fragment.element_type.value,
+                message=f"Image fragment has no materialized asset: {fragment.content[:120]}",
+            )
+        )
     return issues
 
 
